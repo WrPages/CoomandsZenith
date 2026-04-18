@@ -535,23 +535,23 @@ new SlashCommandBuilder()
 
   ].map(cmd => cmd.toJSON());
 
-  try {
+//  try {
 
     // 🚀 REGISTRAR NUEVOS COMANDOS
-    await rest.put(
-      Routes.applicationGuildCommands(
-        process.env.CLIENT_ID,
-        process.env.GUILD_ID
-      ),
-      { body: commands }
-    );
+   // await rest.put(
+   //   Routes.applicationGuildCommands(
+    //    process.env.CLIENT_ID,
+     //   process.env.GUILD_ID
+     // ),
+    //  { body: commands }
+   // );
 
-    console.log("✅ Slash commands registrados automáticamente");
+  //  console.log("✅ Slash commands registrados automáticamente");
 
-  } catch (error) {
-    console.error("❌ Error registrando comandos:", error);
-  }
-});
+ // } catch (error) {
+ //   console.error("❌ Error registrando comandos:", error);
+//  }
+//});
 //termina comandos
 
 client.login(process.env.TOKEN)
