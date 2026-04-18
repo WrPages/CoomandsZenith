@@ -396,7 +396,7 @@ client.once("ready", async () => {
  // } catch (error) {
    // console.error("❌ Error borrando comandos:", error);
 // }
-});
+//});
   
 
 
