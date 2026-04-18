@@ -533,7 +533,7 @@ new SlashCommandBuilder()
   // console.log("✅ Slash commands registrados automáticamente");
 ///
 //  } catch (error) {
-    console.error("❌ Error registrando comandos:", error);
+   // console.error("❌ Error registrando comandos:", error);
 // }
 //});
 //termina comandos
