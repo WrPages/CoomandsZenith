@@ -720,34 +720,40 @@ if (interaction.commandName === "add_vip") {
 
 if (interaction.commandName === "register") {
 
-const group = await getUserGroup(interaction);
+  const group = await getUserGroup(interaction);
 
-if (!group) {
-  return interaction.reply("❌ No group");
-}
-
-  const config = GROUP_CONFIG[group]
-
-  const id = interaction.options.getString("id")
-
-  if (!/^\d{16}$/.test(id)) {
-    return interaction.reply("❌ ID must be 16 digits")
+  if (!group) {
+    return interaction.reply("❌ No group");
   }
 
-  // 🔥 Cargar archivo correcto del gist correcto
+  const config = GROUP_CONFIG[group];
+  const id = interaction.options.getString("id");
+
+  if (!/^\d{16}$/.test(id)) {
+    return interaction.reply("❌ ID must be 16 digits");
+  }
+
   let users = await getUsers(
     config.USERS_GIST_ID,
     config.USERS_FILENAME
-  )
+  );
 
- const oldData = users[interaction.user.id] || {};
+  const oldData = users[interaction.user.id] || {};
 
-users[interaction.user.id] = {
-  main_id: id,
-  sec_id: oldData.sec_id || null,
-  name: interaction.member.displayName
+  users[interaction.user.id] = {
+    main_id: id,
+    sec_id: oldData.sec_id || null,
+    name: interaction.member.displayName
+  };
+
+  await saveUsers(
+    users,
+    config.USERS_GIST_ID,
+    config.USERS_FILENAME
+  );
+
+  return interaction.reply(`✅ Main ID registered in ${group}`);
 }
-  }
 
   // 🔥 Guardar en archivo correcto del gist correcto
   await saveUsers(
