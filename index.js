@@ -755,16 +755,7 @@ if (interaction.commandName === "register") {
   return interaction.reply(`✅ Main ID registered in ${group}`);
 }
 
-  // 🔥 Guardar en archivo correcto del gist correcto
-  await saveUsers(
-    users,
-    config.USERS_GIST_ID,
-    config.USERS_FILENAME
-  )
-
-  return interaction.reply(`✅ Main ID registered in ${group}`)
-}
-          
+  // 🔥 Guardar en archivo correcto del gist correcto       
 
 //adsec
 if (interaction.commandName === "add_sec") {
