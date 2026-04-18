@@ -356,23 +356,23 @@ client.once("clientReady", async () => {
 
   const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
-//  try {
+  try {
 
 
     // 🗑️ BORRAR COMANDOS ANTIGUOS DEL SERVIDOR
-   // await rest.put(
-    //  Routes.applicationGuildCommands(
-    //   process.env.CLIENT_ID,
-    //   process.env.GUILD_ID
-   //   ),
-   //   { body: [] }
-  //);
+    await rest.put(
+      Routes.applicationGuildCommands(
+       process.env.CLIENT_ID,
+       process.env.GUILD_ID
+      ),
+      { body: [] }
+  );
 
-   // console.log("🗑️ Comandos antiguos eliminados");
+    console.log("🗑️ Comandos antiguos eliminados");
 
-  //} catch (error) {
-  //  console.error("❌ Error borrando comandos:", error);
- //}
+  } catch (error) {
+    console.error("❌ Error borrando comandos:", error);
+ }
 
   // 🔥 DEFINIR COMANDOS NUEVOS
   const commands = [
