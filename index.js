@@ -78,10 +78,8 @@ async function getUserGroup(interaction) {
 }
 
 
-
-async function getOnlineIDs(gistId) {
+async function getOnlineIDs(gistId, fileName) {
   try {
-
     const res = await fetch(
       `https://api.github.com/gists/${gistId}?t=${Date.now()}`,
       {
@@ -91,20 +89,24 @@ async function getOnlineIDs(gistId) {
           "Cache-Control": "no-cache"
         }
       }
-    )
+    );
 
-    const data = await res.json()
+    if (!res.ok) {
+      console.log("GitHub read error:", res.status);
+      return [];
+    }
 
-const content = data.files[config.IDS_FILENAME]?.content || "";
+    const data = await res.json();
+    const content = data.files[fileName]?.content || "";
 
     return content
       .split("\n")
       .map(x => x.trim())
-      .filter(x => x.length > 0)
+      .filter(x => x.length > 0);
 
   } catch (err) {
-    console.error("Error leyendo ids:", err)
-    return []
+    console.error("Error leyendo ids:", err);
+    return [];
   }
 }
 
@@ -369,12 +371,6 @@ async function addVipID(id, group) {
 
 //tewmina
 
-client.on("ready", () => {
- // setInterval(updateTotalPPM, 5 * 60 * 1000)
-  //updateTotalPPM()
- startDailyScheduler() 
-  console.log("Bot ready 🔥")
-})
 
 
 //Comandos
@@ -382,10 +378,7 @@ client.once("ready", async () => {
   console.log(`✅ Bot listo como ${client.user.tag}`);
   
   
-  client.once("ready", () => {
-    console.log("Bot online");
 
-});
 
 
 
@@ -577,11 +570,17 @@ function saveHistory(data) {
 
 
 client.on("interactionCreate", async (interaction) => {
+  if (
+    !interaction.isChatInputCommand() &&
+    !interaction.isStringSelectMenu() &&
+    !interaction.isButton()
+  ) return;
+
  // if (!interaction.isChatInputCommand()) return
   const { commandName } = interaction;
 
   const userId = interaction.user.id
-  let users = await getUsers()
+//  let users = await getUsers()
 
 //SCHENDULE
 
@@ -660,7 +659,7 @@ const utcNow = now.toISOString().slice(11,16) // HH:MM en UTC real 24h
  
 // 🔹 VIP ids
 // 🔹 GP COMMAND (solo Champion + selector de grupo)
-if (interaction.commandName === "gp") {
+if (interaction.commandName === "add_vip") {
 
   const CHAMPION_ROLE_ID = "1486206362332434634"; // 👈 tu rol Champion
 
@@ -759,7 +758,7 @@ users[interaction.user.id] = {
 
   return interaction.reply(`✅ Main ID registered in ${group}`)
 }
-
+          
 
 //adsec
 if (interaction.commandName === "add_sec") {
@@ -977,7 +976,7 @@ if (interaction.commandName === "set_offline") {
   const member = interaction.member;
 
   if (!member.roles.cache.some(role => role.name === "Champion")) {
-    return safeReply(interaction, {
+    return interaction.reply({
       content: "❌ You need the **Champion** role to use this command.",
       ephemeral: true
     });
@@ -1003,7 +1002,7 @@ if (interaction.commandName === "set_offline") {
 
   const row = new ActionRowBuilder().addComponents(menu);
 
-  return safeReply(interaction, {
+  return interaction.reply({
     content: "Select the group:",
     components: [row],
     ephemeral: true
@@ -1048,6 +1047,45 @@ if (interaction.isStringSelectMenu() && interaction.customId === "select_active_
     components: []
   })
 }
+if (interaction.isStringSelectMenu() && interaction.customId === "select_offline_group") {
+
+  const group = interaction.values[0];
+
+  if (!GROUP_CONFIG[group]) {
+    return interaction.update({
+      content: "❌ Invalid group selected.",
+      components: []
+    });
+  }
+
+  const onlineUsers = await getOnlineUsersByGroup(group);
+
+  if (onlineUsers.length === 0) {
+    return interaction.update({
+      content: `⚫ No active users in **${group}**`,
+      components: []
+    });
+  }
+
+  const options = onlineUsers.slice(0, 25).map(user => ({
+    label: user.label,
+    description: user.id,
+    value: `${group}|${user.id}`
+  }));
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("select_offline_user")
+    .setPlaceholder("Select active user")
+    .addOptions(options);
+
+  const row = new ActionRowBuilder().addComponents(menu);
+
+  return interaction.update({
+    content: `Select active user from **${group}**:`,
+    components: [row]
+  });
+}
+ 
 
  if (interaction.isStringSelectMenu() && interaction.customId === "select_offline_group") {
   const group = interaction.values[0];
@@ -1089,6 +1127,7 @@ if (interaction.isStringSelectMenu() && interaction.customId === "select_active_
  
 //////
 if (interaction.isStringSelectMenu() && interaction.customId === "select_offline_user") {
+
   const selected = interaction.values[0];
   const [group, id] = selected.split("|");
 
@@ -1106,6 +1145,7 @@ if (interaction.isStringSelectMenu() && interaction.customId === "select_offline
 }
 
 if (interaction.isButton() && interaction.customId.startsWith("confirm_offline_")) {
+
   const raw = interaction.customId.replace("confirm_offline_", "");
   const [group, id] = raw.split("|");
 
