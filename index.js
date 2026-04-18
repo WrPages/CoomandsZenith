@@ -376,7 +376,27 @@ async function addVipID(id, group) {
 //Comandos
 client.once("ready", async () => {
   console.log(`✅ Bot listo como ${client.user.tag}`);
-  
+ 
+  console.log(`🧹 Limpiando comandos...`);
+
+  const { REST, Routes } = require("discord.js");
+  const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+
+  try {
+    // 🔥 BORRAR TODOS LOS COMANDOS DEL SERVIDOR
+    await rest.put(
+      Routes.applicationGuildCommands(
+        process.env.CLIENT_ID,
+        process.env.GUILD_ID
+      ),
+      { body: [] }
+    );
+
+    console.log("✅ Comandos eliminados del servidor");
+  } catch (error) {
+    console.error("❌ Error borrando comandos:", error);
+  }
+});
   
 
 
@@ -386,23 +406,23 @@ client.once("ready", async () => {
 
   const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
-  try {
+ // try {
 
 
     // 🗑️ BORRAR COMANDOS ANTIGUOS DEL SERVIDOR
-    await rest.put(
-      Routes.applicationGuildCommands(
-       process.env.CLIENT_ID,
-       process.env.GUILD_ID
-     ),
-     { body: [] }
-   );
+  //  await rest.put(
+     // Routes.applicationGuildCommands(
+     //  process.env.CLIENT_ID,
+    //   process.env.GUILD_ID
+    // ),
+   //  { body: [] }
+ //  );
 
-    console.log("🗑️ Comandos antiguos eliminados");
+   // console.log("🗑️ Comandos antiguos eliminados");
 
-  } catch (error) {
-    console.error("❌ Error borrando comandos:", error);
-  }
+ // } catch (error) {
+ //   console.error("❌ Error borrando comandos:", error);
+ // }
 
   // 🔥 DEFINIR COMANDOS NUEVOS
   const commands = [
