@@ -377,26 +377,26 @@ async function addVipID(id, group) {
 client.once("ready", async () => {
   console.log(`✅ Bot listo como ${client.user.tag}`);
  
-  console.log(`🧹 Limpiando comandos...`);
+  //console.log(`🧹 Limpiando comandos...`);
 
-  const { REST, Routes } = require("discord.js");
- const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+//  const { REST, Routes } = require("discord.js");
+// const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
-  try {
+//  try {
     // 🔥 BORRAR TODOS LOS COMANDOS DEL SERVIDOR
-    await rest.put(
-      Routes.applicationGuildCommands(
-        process.env.CLIENT_ID,
-        process.env.GUILD_ID
-      ),
-      { body: [] }
-    );
+ //   await rest.put(
+  //    Routes.applicationGuildCommands(
+    //    process.env.CLIENT_ID,
+    //    process.env.GUILD_ID
+   //   ),
+  //    { body: [] }
+ //   );
 
-    console.log("✅ Comandos eliminados del servidor");
-  } catch (error) {
-    console.error("❌ Error borrando comandos:", error);
- }
-});
+ //   console.log("✅ Comandos eliminados del servidor");
+ // } catch (error) {
+//    console.error("❌ Error borrando comandos:", error);
+// }
+//});
   
 
 
@@ -519,23 +519,23 @@ new SlashCommandBuilder()
 
   ].map(cmd => cmd.toJSON());
 
-//  try {
+  try {
 
  //   // 🚀 REGISTRAR NUEVOS COMANDOS
-   // await rest.put(
-   //   Routes.applicationGuildCommands(
-      //  process.env.CLIENT_ID,
-    //    process.env.GUILD_ID
-    //  ),
-    //  { body: commands }
-   // );
+    await rest.put(
+      Routes.applicationGuildCommands(
+        process.env.CLIENT_ID,
+        process.env.GUILD_ID
+     ),
+      { body: commands }
+    );
 
-   // console.log("✅ Slash commands registrados automáticamente");
+   console.log("✅ Slash commands registrados automáticamente");
 
-  //} catch (error) {
- //   console.error("❌ Error registrando comandos:", error);
- //}
-//});
+  } catch (error) {
+    console.error("❌ Error registrando comandos:", error);
+ }
+});
 //termina comandos
 
 client.login(process.env.TOKEN)
