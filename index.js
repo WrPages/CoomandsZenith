@@ -338,7 +338,6 @@ client.on("clientReady", () => {
  startDailyScheduler() 
   console.log("Bot ready 🔥")
 })
-require("./gpHandler")(client);
 
 
 //Comandos
