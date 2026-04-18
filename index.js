@@ -108,6 +108,59 @@ const content = data.files[config.IDS_FILENAME]?.content || "";
   }
 }
 
+
+
+//
+function chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) {
+    out.push(arr.slice(i, i + size));
+  }
+  return out;
+}
+
+function buildUserLabel(user, id) {
+  if (!user) return `Unknown`;
+  if (user.main_id === id) return `${user.name} (Main)`;
+  if (user.sec_id === id) return `${user.name} (Sec)`;
+  return `${user.name}`;
+}
+
+async function getOnlineUsersByGroup(group) {
+  const config = GROUP_CONFIG[group];
+  if (!config) return [];
+
+  const onlineIds = await getOnlineIDs(config.IDS_GIST_ID, config.IDS_FILENAME);
+  if (!onlineIds.length) return [];
+
+  const users = await getUsers(config.USERS_GIST_ID, config.USERS_FILENAME);
+
+  const results = [];
+
+  for (const id of onlineIds) {
+    let foundUser = null;
+
+    for (const uid in users) {
+      const u = users[uid];
+      if (u.main_id === id || u.sec_id === id) {
+        foundUser = u;
+        break;
+      }
+    }
+
+    results.push({
+      id,
+      label: buildUserLabel(foundUser, id),
+      user: foundUser
+    });
+  }
+
+  return results;
+}
+
+
+
+
 //termina
 const fs = require("fs")
 
@@ -455,14 +508,14 @@ new SlashCommandBuilder()
       .setName("online_list")
       .setDescription("List online users in your group"),
 
-    new SlashCommandBuilder()
-      .setName("gp")
-      .setDescription("Add VIP ID")
-      .addStringOption(option =>
-        option.setName("id")
-          .setDescription("16 digit VIP ID")
-          .setRequired(true)
-      )
+  new SlashCommandBuilder()
+  .setName("add_vip")
+  .setDescription("Add VIP ID")
+  .addStringOption(option =>
+    option.setName("id")
+      .setDescription("16 digit VIP ID")
+      .setRequired(true)
+  )
   
       
       
@@ -688,10 +741,13 @@ if (!group) {
     config.USERS_FILENAME
   )
 
-  users[interaction.user.id] = {
-    main_id: id,
-    sec_id: null,
-    name: interaction.member.displayName
+ const oldData = users[interaction.user.id] || {};
+
+users[interaction.user.id] = {
+  main_id: id,
+  sec_id: oldData.sec_id || null,
+  name: interaction.member.displayName
+}
   }
 
   // 🔥 Guardar en archivo correcto del gist correcto
@@ -917,82 +973,41 @@ if (userData.sec_id) {
  
 //SETOFFLINE
 
- if (interaction.commandName === "set_offline") {
+if (interaction.commandName === "set_offline") {
+  const member = interaction.member;
 
-const member = interaction.member;
-
-if (!member.roles.cache.some(role => role.name === "Champion")) {
-  return interaction.reply({
-    content: "❌ You need the **Champion** role to use this command.",
-    ephemeral: true
-  });
-}
-  
-  const group = await getUserGroup(interaction)
-  if (!group) return interaction.reply("❌ No group")
-
-  const config = GROUP_CONFIG[group]
-
-  // 🔹 Obtener IDs online
-  const res = await fetch(
-    `https://api.github.com/gists/${config.IDS_GIST_ID}?t=${Date.now()}`,
-    {
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`
-      }
-    }
-  )
-
-  const data = await res.json()
-  const content = data.files["elite_ids.txt"]?.content || ""
-
-  const onlineIds = content
-    .split("\n")
-    .map(x => x.trim())
-    .filter(Boolean)
-
-  if (onlineIds.length === 0) {
-    return interaction.reply("⚫ No users online")
-  }
-
-  const users = await getUsers(
-    config.USERS_GIST_ID,
-    config.USERS_FILENAME
-  )
-
-  const options = []
-
-  for (const id of onlineIds) {
-    let name = "Unknown"
-
-    for (const uid in users) {
-      const u = users[uid]
-
-      if (u.main_id === id || u.sec_id === id) {
-        name = u.name
-        break
-      }
-    }
-
-    options.push({
-      label: `${name}`,
-      description: id,
-      value: id
-    })
+  if (!member.roles.cache.some(role => role.name === "Champion")) {
+    return safeReply(interaction, {
+      content: "❌ You need the **Champion** role to use this command.",
+      ephemeral: true
+    });
   }
 
   const menu = new StringSelectMenuBuilder()
-    .setCustomId("select_offline_user")
-    .setPlaceholder("Select user")
-    .addOptions(options.slice(0, 25))
+    .setCustomId("select_offline_group")
+    .setPlaceholder("Select group")
+    .addOptions([
+      {
+        label: "Trainer",
+        value: "Trainer"
+      },
+      {
+        label: "Gym Leader",
+        value: "Gym_Leader"
+      },
+      {
+        label: "Elite Four",
+        value: "Elite_Four"
+      }
+    ]);
 
-  const row = new ActionRowBuilder().addComponents(menu)
+  const row = new ActionRowBuilder().addComponents(menu);
 
-  await interaction.reply({
-    content: "Select user to set OFFLINE:",
+  return safeReply(interaction, {
+    content: "Select the group:",
     components: [row],
     ephemeral: true
-  })
+  });
 }
 
 // 🔹 SELECT GP GROUP
@@ -1034,37 +1049,79 @@ if (interaction.isStringSelectMenu() && interaction.customId === "select_active_
   })
 }
 
+ if (interaction.isStringSelectMenu() && interaction.customId === "select_offline_group") {
+  const group = interaction.values[0];
+
+  if (!GROUP_CONFIG[group]) {
+    return interaction.update({
+      content: "❌ Invalid group selected.",
+      components: []
+    });
+  }
+
+  const onlineUsers = await getOnlineUsersByGroup(group);
+
+  if (!onlineUsers.length) {
+    return interaction.update({
+      content: `⚫ No active users in **${group}**`,
+      components: []
+    });
+  }
+
+  const options = onlineUsers.slice(0, 25).map(entry => ({
+    label: entry.label.slice(0, 100),
+    description: entry.id,
+    value: `${group}|${entry.id}`
+  }));
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("select_offline_user")
+    .setPlaceholder("Select active user")
+    .addOptions(options);
+
+  const row = new ActionRowBuilder().addComponents(menu);
+
+  return interaction.update({
+    content: `Select active user from **${group}**:`,
+    components: [row]
+  });
+}
  
 //////
- if (interaction.isStringSelectMenu() && interaction.customId === "select_offline_user") {
-
-  const id = interaction.values[0]
+if (interaction.isStringSelectMenu() && interaction.customId === "select_offline_user") {
+  const selected = interaction.values[0];
+  const [group, id] = selected.split("|");
 
   const confirm = new ButtonBuilder()
-    .setCustomId(`confirm_offline_${id}`)
+    .setCustomId(`confirm_offline_${group}|${id}`)
     .setLabel("Confirm")
-    .setStyle(ButtonStyle.Danger)
+    .setStyle(ButtonStyle.Danger);
 
-  const row = new ActionRowBuilder().addComponents(confirm)
+  const row = new ActionRowBuilder().addComponents(confirm);
 
   await interaction.update({
-    content: `⚠️ Confirm OFFLINE for ID: ${id}?`,
+    content: `⚠️ Confirm OFFLINE for ID: ${id}\n📂 Group: ${group}`,
     components: [row]
-  })
+  });
 }
 
 if (interaction.isButton() && interaction.customId.startsWith("confirm_offline_")) {
+  const raw = interaction.customId.replace("confirm_offline_", "");
+  const [group, id] = raw.split("|");
 
-  const id = interaction.customId.replace("confirm_offline_", "")
+  if (!GROUP_CONFIG[group] || !id) {
+    return interaction.update({
+      content: "❌ Invalid offline action.",
+      components: []
+    });
+  }
 
-  const group = await getUserGroup(interaction)
-
-  await fetch(`${API_URL}?action=offline&id=${id}&group=${group}`)
+  await fetch(`${API_URL}?action=offline&id=${id}&group=${group}`);
 
   await interaction.update({
-    content: `🔴 ID ${id} set OFFLINE`,
+    content: `🔴 ID ${id} set OFFLINE in **${group}**`,
     components: []
-  })
+  });
 }
  //////////
 
