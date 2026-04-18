@@ -350,7 +350,7 @@ client.once("ready", async () => {
       Routes.applicationGuildCommands(
        process.env.CLIENT_ID,
        process.env.GUILD_ID
-    / ),
+     ),
      { body: [] }
    );
 
