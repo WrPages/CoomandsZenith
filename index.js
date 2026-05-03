@@ -239,6 +239,37 @@ function saveHistory(data) {
 }
 
 //let onlineUsers = {}
+async function setOnlineStatus(action, id, group) {
+  id = String(id || "").trim()
+
+  if (!/^\d{16}$/.test(id)) {
+    throw new Error(`Invalid ID: ${id}`)
+  }
+
+  if (!GROUP_CONFIG[group]) {
+    throw new Error(`Invalid group: ${group}`)
+  }
+
+  const params = new URLSearchParams({
+    action,
+    id,
+    group
+  })
+
+  const res = await fetch(`${API_URL}?${params.toString()}`, {
+    headers: {
+      "Cache-Control": "no-cache"
+    }
+  })
+
+  const text = await res.text().catch(() => "")
+
+  if (!res.ok) {
+    throw new Error(`API ${action} failed: ${res.status} ${text}`)
+  }
+
+  return text
+}
 
 async function getUsers(gistId, fileName) {
   try {
@@ -538,7 +569,7 @@ new SlashCommandBuilder()
 });
 //termina comandos
 
-client.login(process.env.TOKEN)
+//client.login(process.env.TOKEN)
 
 // StartPPMCounter
 
@@ -895,7 +926,7 @@ if (!group) {
     return interaction.reply("❌ You must register your main ID first")
   }
 
-  await fetch(`${API_URL}?action=online&id=${userData.main_id}&group=${group}`)
+  await setOnlineStatus("online", userData.main_id, group)
 
   return interaction.reply("🟢 Main account set online")
 }
@@ -923,7 +954,7 @@ if (!group) {
     return interaction.reply("❌ You must register your secondary ID first")
   }
 
-  await fetch(`${API_URL}?action=online&id=${userData.sec_id}&group=${group}`)
+  await setOnlineStatus("online", userData.sec_id, group)
 
   return interaction.reply("🟢 Secondary account set online")
 }
@@ -961,11 +992,11 @@ let users = await getUsers(
 
   // 🌐 Llamar API con grupo
 if (userData.main_id) {
-  await fetch(`${API_URL}?action=offline&id=${userData.main_id}&group=${group}`)
+  await setOnlineStatus("offline", userData.main_id, group)
 }
 
 if (userData.sec_id) {
-  await fetch(`${API_URL}?action=offline&id=${userData.sec_id}&group=${group}`)
+  await setOnlineStatus("offline", userData.sec_id, group)
 }
 
   return interaction.editReply(`🔴 ${userData.name} is now OFFLINE in ${group}`)
