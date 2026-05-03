@@ -240,35 +240,28 @@ function saveHistory(data) {
 
 //let onlineUsers = {}
 async function setOnlineStatus(action, id, group) {
-  id = String(id || "").trim()
+  try {
+    id = String(id || "").trim()
 
-  if (!/^\d{16}$/.test(id)) {
-    throw new Error(`Invalid ID: ${id}`)
-  }
-
-  if (!GROUP_CONFIG[group]) {
-    throw new Error(`Invalid group: ${group}`)
-  }
-
-  const params = new URLSearchParams({
-    action,
-    id,
-    group
-  })
-
-  const res = await fetch(`${API_URL}?${params.toString()}`, {
-    headers: {
-      "Cache-Control": "no-cache"
+    if (!/^\d{16}$/.test(id)) {
+      console.error("Invalid ID:", id)
+      return false
     }
-  })
 
-  const text = await res.text().catch(() => "")
+    const url = `${API_URL}?action=${action}&id=${id}&group=${group}`
+    const res = await fetch(url)
 
-  if (!res.ok) {
-    throw new Error(`API ${action} failed: ${res.status} ${text}`)
+    if (!res.ok) {
+      const text = await res.text().catch(() => "")
+      console.error(`API ${action} error:`, res.status, text)
+      return false
+    }
+
+    return true
+  } catch (err) {
+    console.error(`setOnlineStatus ${action} error:`, err)
+    return false
   }
-
-  return text
 }
 
 async function getUsers(gistId, fileName) {
@@ -926,9 +919,11 @@ if (!group) {
     return interaction.reply("❌ You must register your main ID first")
   }
 
-  await setOnlineStatus("online", userData.main_id, group)
+await interaction.deferReply({ ephemeral: true })
 
-  return interaction.reply("🟢 Main account set online")
+await setOnlineStatus("online", userData.main_id, group)
+
+return interaction.editReply("🟢 Main account set online")
 }
 
 
@@ -954,9 +949,11 @@ if (!group) {
     return interaction.reply("❌ You must register your secondary ID first")
   }
 
-  await setOnlineStatus("online", userData.sec_id, group)
+await interaction.deferReply({ ephemeral: true })
 
-  return interaction.reply("🟢 Secondary account set online")
+await setOnlineStatus("online", userData.sec_id, group)
+
+return interaction.editReply("🟢 Secondary account set online")
 }
 
 
