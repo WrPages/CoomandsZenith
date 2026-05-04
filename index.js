@@ -1,5 +1,16 @@
- const { Client, GatewayIntentBits, EmbedBuilder, ModalBuilder,
-  TextInputBuilder,TextInputStyle,ActionRowBuilder,StringSelectMenuBuilder, ButtonBuilder, ButtonStyle} = require('discord.js')
+const { 
+  Client, 
+  GatewayIntentBits, 
+  EmbedBuilder, 
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  MessageFlags
+} = require('discord.js')
 const fetch = require('node-fetch')
 
 
@@ -81,12 +92,12 @@ async function getUserGroup(interaction) {
 async function getOnlineIDs(gistId, fileName) {
   try {
     const res = await fetch(
-      `https://api.github.com/gists/${gistId}?t=${Date.now()}`,
+      `https://api.github.com/gists/${gistId}`,
       {
         headers: {
           Authorization: `Bearer ${GITHUB_TOKEN}`,
           Accept: "application/vnd.github+json",
-          "Cache-Control": "no-cache"
+
         }
       }
     );
@@ -264,47 +275,85 @@ async function setOnlineStatus(action, id, group) {
   }
 }
 
+const gistCache = new Map();
+const CACHE_TIME = 5 * 60 * 1000; // 5 minutos
+
 async function getUsers(gistId, fileName) {
-  try {
-    const res = await fetch(`https://api.github.com/gists/${gistId}?t=${Date.now()}`, {
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
-        Accept: "application/vnd.github+json",
-        "Cache-Control": "no-cache"
-      }
-    })
+  const key = `${gistId}:${fileName}`;
+  const cached = gistCache.get(key);
 
-    const data = await res.json()
-
-    if (!data.files || !data.files[fileName]) {
-      return {}
-    }
-
-    return JSON.parse(data.files[fileName].content || "{}")
-
-  } catch (err) {
-    console.error("Error loading users:", err)
-    return {}
+  if (cached && Date.now() - cached.time < CACHE_TIME) {
+    return cached.data;
   }
-}
-async function getActiveRoles() {
+
   try {
-    const res = await fetch(`https://api.github.com/gists/${ACTIVE_ROLE_GIST_ID}?t=${Date.now()}`, {
+    const res = await fetch(`https://api.github.com/gists/${gistId}`, {
       headers: {
         Authorization: `Bearer ${GITHUB_TOKEN}`,
         Accept: "application/vnd.github+json"
       }
     });
 
+    if (!res.ok) {
+      console.error("GitHub getUsers error:", res.status);
+      return cached?.data || {};
+    }
+
+    const data = await res.json();
+
+    if (!data.files || !data.files[fileName]) return {};
+
+    const parsed = JSON.parse(data.files[fileName].content || "{}");
+
+    gistCache.set(key, {
+      time: Date.now(),
+      data: parsed
+    });
+
+    return parsed;
+
+  } catch (err) {
+    console.error("Error loading users:", err);
+    return cached?.data || {};
+  }
+}
+async function getActiveRoles() {
+  const key = `${ACTIVE_ROLE_GIST_ID}:${ACTIVE_ROLE_FILE}`;
+  const cached = gistCache.get(key);
+
+  if (cached && Date.now() - cached.time < CACHE_TIME) {
+    return cached.data;
+  }
+
+  try {
+    const res = await fetch(`https://api.github.com/gists/${ACTIVE_ROLE_GIST_ID}`, {
+      headers: {
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json"
+      }
+    });
+
+    if (!res.ok) {
+      console.error("GitHub active roles error:", res.status);
+      return cached?.data || {};
+    }
+
     const data = await res.json();
 
     if (!data.files || !data.files[ACTIVE_ROLE_FILE]) return {};
 
-    return JSON.parse(data.files[ACTIVE_ROLE_FILE].content || "{}");
+    const parsed = JSON.parse(data.files[ACTIVE_ROLE_FILE].content || "{}");
+
+    gistCache.set(key, {
+      time: Date.now(),
+      data: parsed
+    });
+
+    return parsed;
 
   } catch (err) {
     console.error("Error loading active roles:", err);
-    return {};
+    return cached?.data || {};
   }
 }
 
@@ -326,7 +375,7 @@ async function saveActiveRoles(data) {
 }
 
 async function saveUsers(users, gistId, fileName) {
-  await fetch(`https://api.github.com/gists/${gistId}`, {
+  const res = await fetch(`https://api.github.com/gists/${gistId}`, {
     method: "PATCH",
     headers: {
       Authorization: `Bearer ${GITHUB_TOKEN}`,
@@ -339,7 +388,20 @@ async function saveUsers(users, gistId, fileName) {
         }
       }
     })
-  })
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    console.error("GitHub saveUsers error:", res.status, text);
+    return false;
+  }
+
+  gistCache.set(`${gistId}:${fileName}`, {
+    time: Date.now(),
+    data: users
+  });
+
+  return true;
 }
 
 
@@ -398,7 +460,7 @@ async function addVipID(id, group) {
 
 
 //Comandos
-client.once("ready", async () => {
+client.once("clientReady", async () => {
   console.log(`✅ Bot listo como ${client.user.tag}`);
  
   //console.log(`🧹 Limpiando comandos...`);
@@ -695,7 +757,7 @@ if (interaction.commandName === "add_vip") {
   if (!interaction.inGuild()) {
     return interaction.reply({
       content: "❌ This command can only be used inside a server.",
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -705,7 +767,7 @@ if (interaction.commandName === "add_vip") {
   if (!member.roles.cache.has(CHAMPION_ROLE_ID)) {
     return interaction.reply({
       content: "⛔ Only Champions can use this command.",
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -714,7 +776,7 @@ if (interaction.commandName === "add_vip") {
   if (!/^\d{16}$/.test(id)) {
     return interaction.reply({
       content: "❌ ID must be 16 digits",
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -741,7 +803,7 @@ if (interaction.commandName === "add_vip") {
   return interaction.reply({
     content: `🔥 Select group to add VIP ID:\n\`${id}\``,
     components: [row],
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 }
 //tegister
@@ -833,7 +895,7 @@ if (interaction.commandName === "change") {
 
   try {
 
-    await interaction.deferReply({ ephemeral: true })
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
 const group = await getUserGroup(interaction)
     if (!group) {
@@ -919,7 +981,7 @@ if (!group) {
     return interaction.reply("❌ You must register your main ID first")
   }
 
-await interaction.deferReply({ ephemeral: true })
+await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
 await setOnlineStatus("online", userData.main_id, group)
 
@@ -949,7 +1011,7 @@ if (!group) {
     return interaction.reply("❌ You must register your secondary ID first")
   }
 
-await interaction.deferReply({ ephemeral: true })
+await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
 await setOnlineStatus("online", userData.sec_id, group)
 
@@ -1007,7 +1069,7 @@ if (interaction.commandName === "set_offline") {
   if (!member.roles.cache.some(role => role.name === "Champion")) {
     return interaction.reply({
       content: "❌ You need the **Champion** role to use this command.",
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -1034,7 +1096,7 @@ if (interaction.commandName === "set_offline") {
   return interaction.reply({
     content: "Select the group:",
     components: [row],
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 }
 
@@ -1115,44 +1177,6 @@ if (interaction.isStringSelectMenu() && interaction.customId === "select_offline
   });
 }
  
-
- if (interaction.isStringSelectMenu() && interaction.customId === "select_offline_group") {
-  const group = interaction.values[0];
-
-  if (!GROUP_CONFIG[group]) {
-    return interaction.update({
-      content: "❌ Invalid group selected.",
-      components: []
-    });
-  }
-
-  const onlineUsers = await getOnlineUsersByGroup(group);
-
-  if (!onlineUsers.length) {
-    return interaction.update({
-      content: `⚫ No active users in **${group}**`,
-      components: []
-    });
-  }
-
-  const options = onlineUsers.slice(0, 25).map(entry => ({
-    label: entry.label.slice(0, 100),
-    description: entry.id,
-    value: `${group}|${entry.id}`
-  }));
-
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId("select_offline_user")
-    .setPlaceholder("Select active user")
-    .addOptions(options);
-
-  const row = new ActionRowBuilder().addComponents(menu);
-
-  return interaction.update({
-    content: `Select active user from **${group}**:`,
-    components: [row]
-  });
-}
  
 //////
 if (interaction.isStringSelectMenu() && interaction.customId === "select_offline_user") {
@@ -1235,12 +1259,11 @@ if (interaction.commandName === "online_list") {
 
     // 🔹 Obtener IDs online del gist correcto
     const resOnline = await fetch(
-      `https://api.github.com/gists/${config.IDS_GIST_ID}?t=${Date.now()}`,
+      `https://api.github.com/gists/${config.IDS_GIST_ID}`,
       {
         headers: {
           Authorization: `Bearer ${GITHUB_TOKEN}`,
           Accept: "application/vnd.github+json",
-          "Cache-Control": "no-cache"
         }
       }
     );
@@ -1310,7 +1333,7 @@ if (interaction.commandName === "change_rol") {
   if (userGroups.length === 0) {
     return interaction.reply({
       content: "❌ You don't have any valid reroll roles.",
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -1318,7 +1341,7 @@ if (interaction.commandName === "change_rol") {
   if (userGroups.length === 1) {
     return interaction.reply({
       content: `⚠️ You only have one role (**${userGroups[0]}**).\nYou need at least 2 roles to switch.`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -1338,7 +1361,7 @@ if (interaction.commandName === "change_rol") {
   return interaction.reply({
     content: "🎯 Select your active group:",
     components: [row],
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 }
 
@@ -1352,14 +1375,14 @@ if (commandName === "editpanel") {
     if (!member.roles.cache.some(role => role.name === "Champion")) {
       return interaction.reply({
         content: "❌ You need the **Champion** role to use this command.",
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
     // ----- Resto del comando aquí -----
     await interaction.reply({
       content: "📝 Please send the **Message ID** of the panel you want to edit:",
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
 
     const filter = m => m.author.id === interaction.user.id;
@@ -1373,16 +1396,16 @@ if (commandName === "editpanel") {
 
     const message = await interaction.channel.messages.fetch(messageId).catch(() => null);
     if (!message) {
-      return interaction.followUp({ content: "❌ Message not found.", ephemeral: true });
+      return interaction.followUp({ content: "❌ Message not found.", flags: MessageFlags.Ephemeral });
     }
 
     if (!message.embeds.length) {
-      return interaction.followUp({ content: "❌ That message has no embed.", ephemeral: true });
+      return interaction.followUp({ content: "❌ That message has no embed.", flags: MessageFlags.Ephemeral });
     }
 
     await interaction.followUp({
       content: "🔢 Now, please send the new **Rarity (1-5)**:",
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
 
     const collectedRarity = await interaction.channel.awaitMessages({
@@ -1396,7 +1419,7 @@ if (commandName === "editpanel") {
     if (isNaN(rarityInput) || rarityInput < 1 || rarityInput > 5) {
       return interaction.followUp({
         content: "❌ Invalid rarity. Must be a number between 1 and 5.",
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -1421,7 +1444,7 @@ if (commandName === "editpanel") {
 
     await interaction.followUp({
       content: `✅ Panel updated successfully to **${rarityInput}/5**!`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
 
   } catch (err) {
@@ -1429,7 +1452,7 @@ if (commandName === "editpanel") {
     if (!interaction.replied) {
       await interaction.reply({
         content: "❌ Something went wrong.",
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
   }
