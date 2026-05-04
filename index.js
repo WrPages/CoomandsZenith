@@ -11,7 +11,7 @@ const {
   ButtonStyle,
   MessageFlags
 } = require('discord.js')
-const fetch = require('node-fetch')
+const { Redis } = require("@upstash/redis")
 
 
 
@@ -26,311 +26,128 @@ GatewayIntentBits.GuildMembers,
 })
 
 const TOKEN = process.env.TOKEN
-//const API_URL = "https://add-ids.netlify.app/.netlify/functions/api"
+
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN
+})
 
 
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN
-
-// ================= ONLINE STATE SYSTEM =================
-// Reemplaza Netlify: maneja online/offline en memoria y sincroniza al Gist.
-
-const onlineState = {
-  Trainer: new Set(),
-  Gym_Leader: new Set(),
-  Elite_Four: new Set()
-};
-
-const onlineDirty = {
-  Trainer: false,
-  Gym_Leader: false,
-  Elite_Four: false
-};
-
-let onlineStateReady = false;
-let onlineSyncRunning = false;
-
-const onlineSyncCooldownUntil = {
-  Trainer: 0,
-  Gym_Leader: 0,
-  Elite_Four: 0
-};
-
-const ONLINE_SYNC_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutos
-
-function parseIdsFromText(content) {
-  return String(content || "")
-    .split(/\r?\n/)
-    .map(x => x.trim())
-    .filter(x => x !== "" && x !== "\u200B")
-    .filter(x => /^\d{16}$/.test(x));
-}
-
-function buildOnlineContent(group) {
-  const ids = [...onlineState[group]].filter(x => /^\d{16}$/.test(x));
-  return ids.length ? ids.join("\n") : "\u200B";
-}
-
-async function loadOnlineStateFromGists() {
-  if (!GITHUB_TOKEN) {
-    console.error("❌ Missing GITHUB_TOKEN in Railway environment variables");
-    return false;
-  }
-
-  for (const group of Object.keys(GROUP_CONFIG)) {
-    const config = GROUP_CONFIG[group];
-
-    try {
-      const res = await fetch(`https://api.github.com/gists/${config.IDS_GIST_ID}`, {
-        headers: {
-          Authorization: `Bearer ${GITHUB_TOKEN}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "Zenith-Rise-Discord-Bot"
-        }
-      });
-
-      const text = await res.text();
-
-      if (!res.ok) {
-        console.error(`❌ GitHub load online state error ${group}:`, res.status, text);
-        continue;
-      }
-
-      const gist = JSON.parse(text);
-
-      const content = gist.files?.[config.IDS_FILENAME]?.content || "";
-      const ids = parseIdsFromText(content);
-
-      onlineState[group] = new Set(ids);
-      onlineDirty[group] = false;
-
-      console.log(`✅ Online state loaded for ${group}: ${ids.length} IDs`);
-
-    } catch (err) {
-      console.error(`❌ Error loading online state for ${group}:`, err);
-    }
-  }
-
-  onlineStateReady = true;
-  return true;
-}
-
-async function syncOnlineGroupToGist(group, force = false) {
-  const config = GROUP_CONFIG[group];
-  if (!config) return false;
-
-  if (!force && !onlineDirty[group]) return true;
-
-  const now = Date.now();
-
-  if (!force && onlineSyncCooldownUntil[group] > now) {
-    const secondsLeft = Math.ceil((onlineSyncCooldownUntil[group] - now) / 1000);
-    console.log(`⏳ GitHub sync cooldown for ${group}: ${secondsLeft}s left`);
-    return false;
-  }
-
-  const content = buildOnlineContent(group);
-
-  try {
-    const res = await fetch(`https://api.github.com/gists/${config.IDS_GIST_ID}`, {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
-        Accept: "application/vnd.github+json",
-        "User-Agent": "Zenith-Rise-Discord-Bot"
-      },
-      body: JSON.stringify({
-        files: {
-          [config.IDS_FILENAME]: {
-            content
-          }
-        }
-      })
-    });
-
-    const text = await res.text();
-
-    if (!res.ok) {
-      console.error(`❌ GitHub sync online error ${group}:`, res.status, text);
-
- if (res.status === 403 || res.status === 429) {
-  const retryAfter = res.headers.get("retry-after");
-  const rateReset = res.headers.get("x-ratelimit-reset");
-  const remaining = res.headers.get("x-ratelimit-remaining");
-
-  let waitMs = ONLINE_SYNC_COOLDOWN_MS;
-
-  if (retryAfter) {
-    waitMs = Number(retryAfter) * 1000;
-  } else if (remaining === "0" && rateReset) {
-    const resetMs = Number(rateReset) * 1000;
-    waitMs = Math.max(resetMs - Date.now(), ONLINE_SYNC_COOLDOWN_MS);
-  }
-
-  onlineSyncCooldownUntil[group] = Date.now() + waitMs;
-
-  console.error(
-    `⏳ Pausing GitHub sync for ${group} for ${Math.ceil(waitMs / 1000)} seconds.`
-  );
-}
-
-      return false;
-    }
-
-    onlineDirty[group] = false;
-    onlineSyncCooldownUntil[group] = 0;
-
-    gistCache.set(`${config.IDS_GIST_ID}:${config.IDS_FILENAME}:online_ids`, {
-      time: Date.now(),
-      data: [...onlineState[group]]
-    });
-
-    console.log(`✅ Online state synced for ${group}: ${onlineState[group].size} IDs`);
-    return true;
-
-  } catch (err) {
-    console.error(`❌ Error syncing online state for ${group}:`, err);
-    return false;
-  }
-}
-async function syncAllOnlineGroups(force = false) {
-  if (onlineSyncRunning) return;
-  onlineSyncRunning = true;
-
-  try {
-    for (const group of Object.keys(GROUP_CONFIG)) {
-      await syncOnlineGroupToGist(group, force);
-    }
-  } finally {
-    onlineSyncRunning = false;
-  }
-}
-
-function startOnlineSyncLoop() {
-  setInterval(async () => {
-    await syncAllOnlineGroups(false);
-  }, 5 * 60 * 1000);
-}
-async function shutdownOnlineSync() {
-  console.log("💾 Saving online state before shutdown...");
-  await syncAllOnlineGroups(false);
-  process.exit(0);
-}
-
-process.on("SIGINT", shutdownOnlineSync);
-process.on("SIGTERM", shutdownOnlineSync);
-
-
-
-function getOnlineIDsFromMemory(group) {
-  if (!GROUP_CONFIG[group]) return [];
-  return [...onlineState[group]].filter(x => /^\d{16}$/.test(x));
-}
 
 //detecta onlineppm
 const GROUP_CONFIG = {
   Trainer: {
-   VIP_FILENAME:"trainer_vip.txt",
-   IDS_FILENAME:"trainer_ids.txt",
-    USERS_FILENAME: "trainer_users.json",
-    USERS_GIST_ID: "1c066922bc39ac136b6f234fad6d9420",
-    IDS_GIST_ID: "4edcf4d341cd4f7d5d0fb8a50f8b8c3c",
-    VIP_GIST_ID: "16541fd83785a49ad4a0f22bbeb06000"
+    label: "Trainer"
   },
   Gym_Leader: {
-   VIP_FILENAME:"gym_vip.txt",
-   IDS_FILENAME:"gym_ids.txt",
-    USERS_FILENAME: "gym_users.json",
-    USERS_GIST_ID: "a3f5f3d8a2e6ddf2378fb3481dff49f6",
-    IDS_GIST_ID: "e110c37b3e0b8de83a33a1b0a5eb64e8",
-    VIP_GIST_ID: "79a0e30c401cfd63e78d9ec5a9210091"
+    label: "Gym Leader"
   },
   Elite_Four: {
-   VIP_FILENAME:"elite_vip.txt",
-   IDS_FILENAME:"elite_ids.txt",
-    USERS_FILENAME: "elite_users.json",
-    USERS_GIST_ID: "bb18eda2ea748723d8fe0131dd740b70",
-    IDS_GIST_ID: "d9db3a72fed74c496fd6cc830f9ca6e9",
-    VIP_GIST_ID: "5f2f23e0391882ab4e255bd67e98334a"
+    label: "Elite Four"
   }
 }
+
+function onlineKey(group) {
+  return `online:${group}`
+}
+
+function usersKey(group) {
+  return `users:${group}`
+}
+
+function vipKey(group) {
+  return `vip:${group}`
+}
+
+function schedulesKey() {
+  return "daily_schedules"
+}
+
+function activeRolesKey() {
+  return "active_roles"
+}
+
+function historyKey() {
+  return "ppm_history"
+}
+
+function safeJsonParse(value, fallback = {}) {
+  try {
+    if (!value) return fallback
+    if (typeof value === "object") return value
+    return JSON.parse(value)
+  } catch {
+    return fallback
+  }
+}
+
+function isValidId(id) {
+  return /^\d{16}$/.test(String(id || "").trim())
+}
+
+function normalizeRedisIds(ids) {
+  if (!Array.isArray(ids)) return []
+
+  return ids
+    .map(id => String(id).trim())
+    .filter(id => /^\d{16}$/.test(id))
+}
+
+function normalizeGroupRoleName(roleName) {
+  const map = {
+    "Trainer": "Trainer",
+    "Gym_Leader": "Gym_Leader",
+    "Gym Leader": "Gym_Leader",
+    "Elite_Four": "Elite_Four",
+    "Elite Four": "Elite_Four"
+  }
+
+  return map[roleName] || null
+}
+
+function getMemberGroups(member) {
+  return member.roles.cache
+    .map(role => normalizeGroupRoleName(role.name))
+    .filter(Boolean)
+    .filter((group, index, arr) => arr.indexOf(group) === index)
+}
+
+function getGroupLabel(group) {
+  return GROUP_CONFIG[group]?.label || group
+}
+
 const CHANNEL_GROUP_MAP = {
   "1486277594629275770": "Elite_Four",  // canal elite
   "1487362022864588902": "Trainer",     // canal trainer
   "1484015417411244082": "Gym_Leader"   // canal gym
 }
 
-const ACTIVE_ROLE_GIST_ID = "49c42c0a844bbc4d2c0187fc254140d1"
-const ACTIVE_ROLE_FILE = "active_roles.json"
 
 async function getUserGroup(interaction) {
-
   const activeRoles = await getActiveRoles()
+  const memberGroups = getMemberGroups(interaction.member)
 
-  // 🔥 1. si tiene override guardado
-  if (activeRoles[interaction.user.id]) {
-    return activeRoles[interaction.user.id]
+  if (!memberGroups.length) return null
+
+  const savedRole = activeRoles[interaction.user.id]
+
+  if (savedRole && memberGroups.includes(savedRole)) {
+    return savedRole
   }
 
-  // 🔹 2. fallback al rol real
-  const member = interaction.member
-
-  const role = member.roles.cache.find(r =>
-    Object.keys(GROUP_CONFIG).includes(r.name)
-  )
-
-  if (!role) return null
-
-  return role.name
+  return memberGroups[0]
 }
 
 
-async function getOnlineIDs(gistId, fileName) {
-  const group = Object.keys(GROUP_CONFIG).find(g =>
-    GROUP_CONFIG[g].IDS_GIST_ID === gistId &&
-    GROUP_CONFIG[g].IDS_FILENAME === fileName
-  );
-
-  if (group && onlineStateReady) {
-    return getOnlineIDsFromMemory(group);
-  }
-
-  const key = `${gistId}:${fileName}:online_ids`;
-  const cached = gistCache.get(key);
-
-  if (cached && Date.now() - cached.time < CACHE_TIME) {
-    return cached.data;
-  }
+async function getOnlineIDs(group) {
+  if (!GROUP_CONFIG[group]) return []
 
   try {
-    const res = await fetch(`https://api.github.com/gists/${gistId}`, {
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
-        Accept: "application/vnd.github+json",
-        "User-Agent": "Zenith-Rise-Discord-Bot"
-      }
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.error("GitHub getOnlineIDs error:", res.status, text);
-      return cached?.data || [];
-    }
-
-    const data = await res.json();
-    const content = data.files[fileName]?.content || "";
-
-    const ids = parseIdsFromText(content);
-
-    gistCache.set(key, {
-      time: Date.now(),
-      data: ids
-    });
-
-    return ids;
-
+    const ids = await redis.smembers(onlineKey(group))
+    return normalizeRedisIds(ids)
   } catch (err) {
-    console.error("Error leyendo ids:", err);
-    return cached?.data || [];
+    console.error(`getOnlineIDs Redis error for ${group}:`, err)
+    return []
   }
 }
 
@@ -353,24 +170,22 @@ function buildUserLabel(user, id) {
 }
 
 async function getOnlineUsersByGroup(group) {
-  const config = GROUP_CONFIG[group];
-  if (!config) return [];
+  if (!GROUP_CONFIG[group]) return []
 
-  const onlineIds = await getOnlineIDs(config.IDS_GIST_ID, config.IDS_FILENAME);
-  if (!onlineIds.length) return [];
+  const onlineIds = await getOnlineIDs(group)
+  if (!onlineIds.length) return []
 
-  const users = await getUsers(config.USERS_GIST_ID, config.USERS_FILENAME);
-
-  const results = [];
+  const users = await getUsers(group)
+  const results = []
 
   for (const id of onlineIds) {
-    let foundUser = null;
+    let foundUser = null
 
     for (const uid in users) {
-      const u = users[uid];
+      const u = users[uid]
       if (u.main_id === id || u.sec_id === id) {
-        foundUser = u;
-        break;
+        foundUser = u
+        break
       }
     }
 
@@ -378,37 +193,35 @@ async function getOnlineUsersByGroup(group) {
       id,
       label: buildUserLabel(foundUser, id),
       user: foundUser
-    });
+    })
   }
 
-  return results;
+  return results
 }
-
-
-
-
-//termina
-const fs = require("fs")
-
-const HISTORY_FILE = "./ppm_history.json"
-const TWELVE_HOURS = 12 * 60 * 60 * 1000
 
 // ================= DAILY SCHEDULE SYSTEM =================
 
-const SCHEDULE_FILE = "./daily_schedules.json"
-
-function loadSchedules() {
-  if (!fs.existsSync(SCHEDULE_FILE)) return {}
-  return JSON.parse(fs.readFileSync(SCHEDULE_FILE))
+async function loadSchedules() {
+  try {
+    const data = await redis.get(schedulesKey())
+    return safeJsonParse(data, {})
+  } catch (err) {
+    console.error("Error loading schedules from Redis:", err)
+    return {}
+  }
 }
 
-function saveSchedules(data) {
-  fs.writeFileSync(SCHEDULE_FILE, JSON.stringify(data, null, 2))
+async function saveSchedules(data) {
+  try {
+    await redis.set(schedulesKey(), JSON.stringify(data || {}))
+  } catch (err) {
+    console.error("Error saving schedules to Redis:", err)
+  }
 }
 
 function startDailyScheduler() {
   setInterval(async () => {
-    const schedules = loadSchedules();
+    const schedules = await loadSchedules();
     const now = new Date();
 
     const utcHour = now.getUTCHours();
@@ -448,263 +261,168 @@ function startDailyScheduler() {
       }
     }
 
-    saveSchedules(schedules);
+    await saveSchedules(schedules);
   }, 60 * 1000);
 }
 
 
-function loadHistory() {
-  if (!fs.existsSync(HISTORY_FILE)) return []
-  return JSON.parse(fs.readFileSync(HISTORY_FILE))
+async function loadHistory() {
+  try {
+    const data = await redis.get(historyKey())
+    return safeJsonParse(data, [])
+  } catch (err) {
+    console.error("Error loading history from Redis:", err)
+    return []
+  }
 }
 
-function saveHistory(data) {
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(data))
+async function saveHistory(data) {
+  try {
+    await redis.set(historyKey(), JSON.stringify(data || []))
+  } catch (err) {
+    console.error("Error saving history to Redis:", err)
+  }
 }
-
 //let onlineUsers = {}
 async function setOnlineStatus(action, id, group) {
   try {
-    id = String(id || "").trim();
+    id = String(id || "").trim()
 
     if (!["online", "offline"].includes(action)) {
-      console.error("Invalid action:", action);
-      return false;
+      console.error("Invalid action:", action)
+      return false
     }
 
-    if (!/^\d{16}$/.test(id)) {
-      console.error("Invalid ID:", id);
-      return false;
+    if (!isValidId(id)) {
+      console.error("Invalid ID:", id)
+      return false
     }
 
     if (!GROUP_CONFIG[group]) {
-      console.error("Invalid group:", group);
-      return false;
+      console.error("Invalid group:", group)
+      return false
     }
 
-    if (!onlineStateReady) {
-      console.log("⚠️ Online state not ready, loading now...");
-      await loadOnlineStateFromGists();
+    if (action === "online") {
+      await redis.sadd(onlineKey(group), id)
     }
 
-let changed = false;
+    if (action === "offline") {
+      await redis.srem(onlineKey(group), id)
+    }
 
-if (action === "online") {
-  if (!onlineState[group].has(id)) {
-    onlineState[group].add(id);
-    changed = true;
-  }
-}
-
-if (action === "offline") {
-  if (onlineState[group].has(id)) {
-    onlineState[group].delete(id);
-    changed = true;
-  }
-}
-
-if (!changed) {
-  return true;
-}
-
-onlineDirty[group] = true;
-
-    const config = GROUP_CONFIG[group];
-
-    gistCache.set(`${config.IDS_GIST_ID}:${config.IDS_FILENAME}:online_ids`, {
-      time: Date.now(),
-      data: [...onlineState[group]]
-    });
-
-    return true;
-
+    return true
   } catch (err) {
-    console.error(`setOnlineStatus ${action} error:`, err);
-    return false;
+    console.error(`setOnlineStatus ${action} error:`, err)
+    return false
   }
 }
 
-const gistCache = new Map();
-const CACHE_TIME = 5 * 60 * 1000; // 5 minutos
 
-async function getUsers(gistId, fileName) {
-  const key = `${gistId}:${fileName}`;
-  const cached = gistCache.get(key);
-
-  if (cached && Date.now() - cached.time < CACHE_TIME) {
-    return cached.data;
-  }
-
+async function getUsers(group) {
   try {
-    const res = await fetch(`https://api.github.com/gists/${gistId}`, {
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
-        Accept: "application/vnd.github+json"
-      }
-    });
-
-    if (!res.ok) {
-      console.error("GitHub getUsers error:", res.status);
-      return cached?.data || {};
+    if (!GROUP_CONFIG[group]) {
+      console.error("getUsers invalid group:", group)
+      return {}
     }
 
-    const data = await res.json();
+    const data = await redis.hgetall(usersKey(group))
 
-    if (!data.files || !data.files[fileName]) return {};
+    if (!data || typeof data !== "object") {
+      return {}
+    }
 
-    const parsed = JSON.parse(data.files[fileName].content || "{}");
+    const users = {}
 
-    gistCache.set(key, {
-      time: Date.now(),
-      data: parsed
-    });
+    for (const uid in data) {
+      users[uid] = safeJsonParse(data[uid], {})
+    }
 
-    return parsed;
-
+    return users
   } catch (err) {
-    console.error("Error loading users:", err);
-    return cached?.data || {};
+    console.error(`Error loading users from Redis for ${group}:`, err)
+    return {}
   }
 }
 async function getActiveRoles() {
-  const key = `${ACTIVE_ROLE_GIST_ID}:${ACTIVE_ROLE_FILE}`;
-  const cached = gistCache.get(key);
-
-  if (cached && Date.now() - cached.time < CACHE_TIME) {
-    return cached.data;
-  }
-
   try {
-    const res = await fetch(`https://api.github.com/gists/${ACTIVE_ROLE_GIST_ID}`, {
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
-        Accept: "application/vnd.github+json"
-      }
-    });
+    const data = await redis.hgetall(activeRolesKey())
 
-    if (!res.ok) {
-      console.error("GitHub active roles error:", res.status);
-      return cached?.data || {};
+    if (!data || typeof data !== "object") {
+      return {}
     }
 
-    const data = await res.json();
-
-    if (!data.files || !data.files[ACTIVE_ROLE_FILE]) return {};
-
-    const parsed = JSON.parse(data.files[ACTIVE_ROLE_FILE].content || "{}");
-
-    gistCache.set(key, {
-      time: Date.now(),
-      data: parsed
-    });
-
-    return parsed;
-
+    return data
   } catch (err) {
-    console.error("Error loading active roles:", err);
-    return cached?.data || {};
+    console.error("Error loading active roles from Redis:", err)
+    return {}
   }
 }
 
 async function saveActiveRoles(data) {
-  await fetch(`https://api.github.com/gists/${ACTIVE_ROLE_GIST_ID}`, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${GITHUB_TOKEN}`,
-      Accept: "application/vnd.github+json"
-    },
-    body: JSON.stringify({
-      files: {
-        [ACTIVE_ROLE_FILE]: {
-          content: JSON.stringify(data, null, 2)
-        }
-      }
-    })
-  });
-}
+  try {
+    if (!data || typeof data !== "object") return
 
-async function saveUsers(users, gistId, fileName) {
-  const res = await fetch(`https://api.github.com/gists/${gistId}`, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${GITHUB_TOKEN}`,
-      Accept: "application/vnd.github+json"
-    },
-    body: JSON.stringify({
-      files: {
-        [fileName]: {
-          content: JSON.stringify(users, null, 2)
-        }
-      }
-    })
-  });
+    await redis.del(activeRolesKey())
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    console.error("GitHub saveUsers error:", res.status, text);
-    return false;
+    if (Object.keys(data).length > 0) {
+      await redis.hset(activeRolesKey(), data)
+    }
+  } catch (err) {
+    console.error("Error saving active roles to Redis:", err)
   }
-
-  gistCache.set(`${gistId}:${fileName}`, {
-    time: Date.now(),
-    data: users
-  });
-
-  return true;
 }
 
+async function saveUsers(users, group) {
+  try {
+    if (!GROUP_CONFIG[group]) {
+      console.error("saveUsers invalid group:", group)
+      return false
+    }
 
+    const key = usersKey(group)
 
+    await redis.del(key)
 
+    const payload = {}
 
+    for (const uid in users) {
+      payload[uid] = JSON.stringify(users[uid])
+    }
+
+    if (Object.keys(payload).length > 0) {
+      await redis.hset(key, payload)
+    }
+
+    return true
+  } catch (err) {
+    console.error(`Error saving users to Redis for ${group}:`, err)
+    return false
+  }
+}
 
 //advio
 async function addVipID(id, group) {
   try {
-    const config = GROUP_CONFIG[group]
-    if (!config) return console.log("❌ Grupo inválido")
+    id = String(id || "").trim()
 
-const res = await fetch(`https://api.github.com/gists/${config.VIP_GIST_ID}`, {
-  headers: {
-    Authorization: `Bearer ${GITHUB_TOKEN}`,
-    Accept: "application/vnd.github+json"
-  }
-});
-    if (!res.ok) {
-  const text = await res.text().catch(() => "");
-  console.error("GitHub addVipID read error:", res.status, text);
-  return;
-}
+    if (!isValidId(id)) {
+      console.error("Invalid VIP ID:", id)
+      return false
+    }
 
-    const data = await res.json()
+    if (!GROUP_CONFIG[group]) {
+      console.error("Invalid VIP group:", group)
+      return false
+    }
 
-    let content = data.files[config.VIP_FILENAME]?.content || ""
+    await redis.sadd(vipKey(group), id)
 
-    const ids = content.split("\n").filter(Boolean)
-
-    if (ids.includes(id)) return
-
-    ids.push(id)
-
-    await fetch(`https://api.github.com/gists/${config.VIP_GIST_ID}`, {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
-        Accept: "application/vnd.github+json"
-      },
-      body: JSON.stringify({
-        files: {
-          [config.VIP_FILENAME]: {
-            content: ids.join("\n")
-          }
-        }
-      })
-    })
-
-    console.log(`✅ VIP añadido en ${group}:`, id)
-
+    console.log(`✅ VIP added to Redis ${group}:`, id)
+    return true
   } catch (err) {
-    console.error("Error VIP:", err)
+    console.error("Error saving VIP to Redis:", err)
+    return false
   }
 }
 
@@ -716,9 +434,7 @@ const res = await fetch(`https://api.github.com/gists/${config.VIP_GIST_ID}`, {
 client.once("clientReady", async () => {
   console.log(`✅ Bot listo como ${client.user.tag}`);
 
-    await loadOnlineStateFromGists();
-  startOnlineSyncLoop();
-  startDailyScheduler();
+ startDailyScheduler();
  
   //console.log(`🧹 Limpiando comandos...`);
 
@@ -898,13 +614,22 @@ const TOTAL_CHANNEL_ID = "1484416376436424794"
 //const HISTORY_FILE = "./ppm_history.json";
 //const TWELVE_HOURS = 12 * 60 * 60 * 1000;
 
-function loadHistory() {
-  if (!fs.existsSync(HISTORY_FILE)) return [];
-  return JSON.parse(fs.readFileSync(HISTORY_FILE));
+async function loadHistory() {
+  try {
+    const data = await redis.get(historyKey())
+    return safeJsonParse(data, [])
+  } catch (err) {
+    console.error("Error loading history from Redis:", err)
+    return []
+  }
 }
 
-function saveHistory(data) {
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(data));
+async function saveHistory(data) {
+  try {
+    await redis.set(historyKey(), JSON.stringify(data || []))
+  } catch (err) {
+    console.error("Error saving history to Redis:", err)
+  }
 }
 
 
@@ -927,7 +652,7 @@ client.on("interactionCreate", async (interaction) => {
 if (interaction.commandName === "schedule_events") {
 
   const mode = interaction.options.getString("mode")
-  const schedules = loadSchedules()
+  const schedules = await loadSchedules()
 
 const now = new Date()
 
@@ -935,7 +660,7 @@ const utcNow = now.toISOString().slice(11,16) // HH:MM en UTC real 24h
   if (mode === "stop") {
 
     delete schedules[interaction.user.id]
-    saveSchedules(schedules)
+    await saveSchedules(schedules)
 
     return interaction.reply(`🛑 All daily schedules stopped.\n🕒 Current UTC time: ${utcNow}`)
   }
@@ -945,7 +670,7 @@ const utcNow = now.toISOString().slice(11,16) // HH:MM en UTC real 24h
 
   const config = GROUP_CONFIG[group]
 
-  let users = await getUsers(config.USERS_GIST_ID, config.USERS_FILENAME)
+  let users = await getUsers(group)
   const userData = users[interaction.user.id]
 
   if (!userData?.main_id) {
@@ -1073,10 +798,7 @@ if (interaction.commandName === "register") {
     return interaction.reply("❌ ID must be 16 digits");
   }
 
-  let users = await getUsers(
-    config.USERS_GIST_ID,
-    config.USERS_FILENAME
-  );
+  let users = await getUsers(group)
 
   const oldData = users[interaction.user.id] || {};
 
@@ -1086,11 +808,7 @@ if (interaction.commandName === "register") {
     name: interaction.member.displayName
   };
 
-  await saveUsers(
-    users,
-    config.USERS_GIST_ID,
-    config.USERS_FILENAME
-  );
+ await saveUsers(users, group)
 
   return interaction.reply(`✅ Main ID registered in ${group}`);
 }
@@ -1115,10 +833,7 @@ if (!group) {
   }
 
   // 🔥 Cargar desde el archivo correcto
-  let users = await getUsers(
-    config.USERS_GIST_ID,
-    config.USERS_FILENAME
-  )
+  let users = await getUsers(group)
 
   const userData = users[interaction.user.id]
 
@@ -1129,11 +844,7 @@ if (!group) {
   userData.sec_id = secId
 
   // 🔥 Guardar en el archivo correcto
-  await saveUsers(
-    users,
-    config.USERS_GIST_ID,
-    config.USERS_FILENAME
-  )
+await saveUsers(users, group)
 
   return interaction.reply("✅ Secondary ID added")
 }
@@ -1161,10 +872,7 @@ const group = await getUserGroup(interaction)
     }
 
     // 🔥 Cargar correctamente el archivo del grupo
-    let users = await getUsers(
-      config.USERS_GIST_ID,
-      config.USERS_FILENAME
-    )
+    let users = await getUsers(group)
 
     const userData = users[interaction.user.id]
 
@@ -1187,11 +895,7 @@ if (userData.main_id) {
       name: interaction.member.displayName
     }
 
-    await saveUsers(
-      users,
-      config.USERS_GIST_ID,
-      config.USERS_FILENAME
-    )
+  await saveUsers(users, group)
 
     return interaction.editReply(`🔄 Main ID updated in ${group}`)
 
@@ -1218,10 +922,7 @@ if (!group) {
 
   const config = GROUP_CONFIG[group]
 
-  let users = await getUsers(
-    config.USERS_GIST_ID,
-    config.USERS_FILENAME
-  )
+  let users = await getUsers(group)
 
   const userData = users[interaction.user.id]
 
@@ -1253,10 +954,7 @@ if (!group) {
 
   const config = GROUP_CONFIG[group]
 
-  let users = await getUsers(
-    config.USERS_GIST_ID,
-    config.USERS_FILENAME
-  )
+  let users = await getUsers(group)
 
   const userData = users[interaction.user.id]
 
@@ -1295,10 +993,7 @@ return interaction.editReply("🟢 Secondary account set online. It now appears 
   const config = GROUP_CONFIG[group]
 
   // 📂 Cargar users del grupo correcto
-let users = await getUsers(
-  config.USERS_GIST_ID,
-  config.USERS_FILENAME
-)
+let users = await getUsers(group)
 
   const userData = users[interaction.user.id]
 
@@ -1391,11 +1086,9 @@ if (interaction.isStringSelectMenu() && interaction.customId === "select_active_
 
   const selected = interaction.values[0]
 
-  const activeRoles = await getActiveRoles()
-
-  activeRoles[interaction.user.id] = selected
-
-  await saveActiveRoles(activeRoles)
+await redis.hset(activeRolesKey(), {
+  [interaction.user.id]: selected
+})
 
   return interaction.update({
     content: `✅ Active role set to **${selected}**`,
@@ -1497,11 +1190,7 @@ if (interaction.commandName === "list") {
     return interaction.reply("❌ No reroll group detected");
   }
 
-  const config = GROUP_CONFIG[group];
-  const registeredUsers = await getUsers(
-    config.USERS_GIST_ID,
-    config.USERS_FILENAME
-  );
+ const registeredUsers = await getUsers(group)
 
   if (Object.keys(registeredUsers).length === 0) {
     return interaction.reply("📭 No users registered");
@@ -1526,22 +1215,13 @@ if (interaction.commandName === "online_list") {
     if (!group)
       return interaction.editReply("❌ You don't belong to any reroll group");
 
-    const config = GROUP_CONFIG[group];
-
-    // 🔹 Obtener IDs online del gist correcto
-const onlineIds = await getOnlineIDs(
-  config.IDS_GIST_ID,
-  config.IDS_FILENAME
-);
+    const onlineIds = await getOnlineIDs(group)
 
     if (onlineIds.length === 0)
       return interaction.editReply(`⚫ No users online in ${group}`);
 
     // 🔹 Obtener usuarios registrados del grupo
-    const registeredUsers = await getUsers(
-      config.USERS_GIST_ID,
-      config.USERS_FILENAME
-    );
+    const registeredUsers = await getUsers(group)
 
     let msg = `🟢 **Online users in ${group}:**\n\n`;
     let found = false;
@@ -1586,9 +1266,7 @@ if (interaction.commandName === "change_rol") {
   const member = interaction.member;
 
   // 🔍 obtener roles válidos que el usuario tiene
-  const userGroups = Object.keys(GROUP_CONFIG).filter(group =>
-    member.roles.cache.some(role => role.name === group)
-  );
+  const userGroups = getMemberGroups(member)
 
   // ❌ no tiene ningún grupo
   if (userGroups.length === 0) {
