@@ -90,34 +90,45 @@ async function getUserGroup(interaction) {
 
 
 async function getOnlineIDs(gistId, fileName) {
-  try {
-    const res = await fetch(
-      `https://api.github.com/gists/${gistId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${GITHUB_TOKEN}`,
-          Accept: "application/vnd.github+json",
+  const key = `${gistId}:${fileName}:online_ids`;
+  const cached = gistCache.get(key);
 
-        }
+  if (cached && Date.now() - cached.time < CACHE_TIME) {
+    return cached.data;
+  }
+
+  try {
+    const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+      headers: {
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json"
       }
-    );
+    });
 
     if (!res.ok) {
-      console.log("GitHub read error:", res.status);
-      return [];
+      const text = await res.text().catch(() => "");
+      console.error("GitHub getOnlineIDs error:", res.status, text);
+      return cached?.data || [];
     }
 
     const data = await res.json();
     const content = data.files[fileName]?.content || "";
 
-    return content
-      .split("\n")
+    const ids = content
+      .split(/\r?\n/)
       .map(x => x.trim())
-      .filter(x => x.length > 0);
+      .filter(x => /^\d{16}$/.test(x));
+
+    gistCache.set(key, {
+      time: Date.now(),
+      data: ids
+    });
+
+    return ids;
 
   } catch (err) {
     console.error("Error leyendo ids:", err);
-    return [];
+    return cached?.data || [];
   }
 }
 
@@ -415,13 +426,17 @@ async function addVipID(id, group) {
     const config = GROUP_CONFIG[group]
     if (!config) return console.log("❌ Grupo inválido")
 
-    const res = await fetch(`https://api.github.com/gists/${config.VIP_GIST_ID}?t=${Date.now()}`, {
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
-        Accept: "application/vnd.github+json",
-        "Cache-Control": "no-cache"
-      }
-    })
+const res = await fetch(`https://api.github.com/gists/${config.VIP_GIST_ID}`, {
+  headers: {
+    Authorization: `Bearer ${GITHUB_TOKEN}`,
+    Accept: "application/vnd.github+json"
+  }
+});
+    if (!res.ok) {
+  const text = await res.text().catch(() => "");
+  console.error("GitHub addVipID read error:", res.status, text);
+  return;
+}
 
     const data = await res.json()
 
@@ -983,9 +998,15 @@ if (!group) {
 
 await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
-await setOnlineStatus("online", userData.main_id, group)
+const ok = await setOnlineStatus("online", userData.main_id, group);
 
-return interaction.editReply("🟢 Main account set online")
+if (!ok) {
+  return interaction.editReply(
+    "❌ GitHub/Gist is rate limited right now. Try again later or reduce API calls."
+  );
+}
+
+return interaction.editReply("🟢 Main account set online");
 }
 
 
@@ -1013,9 +1034,15 @@ if (!group) {
 
 await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
-await setOnlineStatus("online", userData.sec_id, group)
+const ok = await setOnlineStatus("online", userData.sec_id, group);
 
-return interaction.editReply("🟢 Secondary account set online")
+if (!ok) {
+  return interaction.editReply(
+    "❌ GitHub/Gist is rate limited right now. Try again later or reduce API calls."
+  );
+}
+
+return interaction.editReply("🟢 Secondary account set online");
 }
 
 
@@ -1050,15 +1077,24 @@ let users = await getUsers(
   }
 
   // 🌐 Llamar API con grupo
+let okMain = true;
+let okSec = true;
+
 if (userData.main_id) {
-  await setOnlineStatus("offline", userData.main_id, group)
+  okMain = await setOnlineStatus("offline", userData.main_id, group);
 }
 
 if (userData.sec_id) {
-  await setOnlineStatus("offline", userData.sec_id, group)
+  okSec = await setOnlineStatus("offline", userData.sec_id, group);
 }
 
-  return interaction.editReply(`🔴 ${userData.name} is now OFFLINE in ${group}`)
+if (!okMain || !okSec) {
+  return interaction.editReply(
+    "❌ GitHub/Gist is rate limited right now. Some IDs may not have been updated."
+  );
+}
+
+return interaction.editReply(`🔴 ${userData.name} is now OFFLINE in ${group}`);
 }
  
 //SETOFFLINE
@@ -1258,29 +1294,10 @@ if (interaction.commandName === "online_list") {
     const config = GROUP_CONFIG[group];
 
     // 🔹 Obtener IDs online del gist correcto
-    const resOnline = await fetch(
-      `https://api.github.com/gists/${config.IDS_GIST_ID}`,
-      {
-        headers: {
-          Authorization: `Bearer ${GITHUB_TOKEN}`,
-          Accept: "application/vnd.github+json",
-        }
-      }
-    );
-
-    if (!resOnline.ok)
-      return interaction.editReply("❌ Error fetching online IDs");
-
-    const gistOnline = await resOnline.json();
-
-    // 🔥 AQUÍ usamos el nombre correcto por grupo
-    const contentOnline =
-      gistOnline.files[config.IDS_FILENAME]?.content || "";
-
-    const onlineIds = contentOnline
-      .split(/\r?\n/)
-      .map(x => x.trim())
-      .filter(x => /^\d{16}$/.test(x));
+const onlineIds = await getOnlineIDs(
+  config.IDS_GIST_ID,
+  config.IDS_FILENAME
+);
 
     if (onlineIds.length === 0)
       return interaction.editReply(`⚫ No users online in ${group}`);
