@@ -26,10 +26,161 @@ GatewayIntentBits.GuildMembers,
 })
 
 const TOKEN = process.env.TOKEN
-const API_URL = "https://add-ids.netlify.app/.netlify/functions/api"
+//const API_URL = "https://add-ids.netlify.app/.netlify/functions/api"
 
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN
+
+// ================= ONLINE STATE SYSTEM =================
+// Reemplaza Netlify: maneja online/offline en memoria y sincroniza al Gist.
+
+const onlineState = {
+  Trainer: new Set(),
+  Gym_Leader: new Set(),
+  Elite_Four: new Set()
+};
+
+const onlineDirty = {
+  Trainer: false,
+  Gym_Leader: false,
+  Elite_Four: false
+};
+
+let onlineStateReady = false;
+let onlineSyncRunning = false;
+
+function parseIdsFromText(content) {
+  return String(content || "")
+    .split(/\r?\n/)
+    .map(x => x.trim())
+    .filter(x => x !== "" && x !== "\u200B")
+    .filter(x => /^\d{16}$/.test(x));
+}
+
+function buildOnlineContent(group) {
+  const ids = [...onlineState[group]].filter(x => /^\d{16}$/.test(x));
+  return ids.length ? ids.join("\n") : "\u200B";
+}
+
+async function loadOnlineStateFromGists() {
+  if (!GITHUB_TOKEN) {
+    console.error("❌ Missing GITHUB_TOKEN in Railway environment variables");
+    return false;
+  }
+
+  for (const group of Object.keys(GROUP_CONFIG)) {
+    const config = GROUP_CONFIG[group];
+
+    try {
+      const res = await fetch(`https://api.github.com/gists/${config.IDS_GIST_ID}`, {
+        headers: {
+          Authorization: `Bearer ${GITHUB_TOKEN}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "Zenith-Rise-Discord-Bot"
+        }
+      });
+
+      const text = await res.text();
+
+      if (!res.ok) {
+        console.error(`❌ GitHub load online state error ${group}:`, res.status, text);
+        continue;
+      }
+
+      const gist = JSON.parse(text);
+
+      const content = gist.files?.[config.IDS_FILENAME]?.content || "";
+      const ids = parseIdsFromText(content);
+
+      onlineState[group] = new Set(ids);
+      onlineDirty[group] = false;
+
+      console.log(`✅ Online state loaded for ${group}: ${ids.length} IDs`);
+
+    } catch (err) {
+      console.error(`❌ Error loading online state for ${group}:`, err);
+    }
+  }
+
+  onlineStateReady = true;
+  return true;
+}
+
+async function syncOnlineGroupToGist(group, force = false) {
+  const config = GROUP_CONFIG[group];
+  if (!config) return false;
+
+  if (!force && !onlineDirty[group]) return true;
+
+  const content = buildOnlineContent(group);
+
+  try {
+    const res = await fetch(`https://api.github.com/gists/${config.IDS_GIST_ID}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "Zenith-Rise-Discord-Bot"
+      },
+      body: JSON.stringify({
+        files: {
+          [config.IDS_FILENAME]: {
+            content
+          }
+        }
+      })
+    });
+
+    const text = await res.text();
+
+    if (!res.ok) {
+      console.error(`❌ GitHub sync online error ${group}:`, res.status, text);
+      return false;
+    }
+
+    onlineDirty[group] = false;
+
+    // Actualizar cache vieja también, por si otra función la usa.
+    gistCache.set(`${config.IDS_GIST_ID}:${config.IDS_FILENAME}:online_ids`, {
+      time: Date.now(),
+      data: [...onlineState[group]]
+    });
+
+    console.log(`✅ Online state synced for ${group}: ${onlineState[group].size} IDs`);
+    return true;
+
+  } catch (err) {
+    console.error(`❌ Error syncing online state for ${group}:`, err);
+    return false;
+  }
+}
+
+async function syncAllOnlineGroups(force = false) {
+  if (onlineSyncRunning) return;
+  onlineSyncRunning = true;
+
+  try {
+    for (const group of Object.keys(GROUP_CONFIG)) {
+      await syncOnlineGroupToGist(group, force);
+    }
+  } finally {
+    onlineSyncRunning = false;
+  }
+}
+
+function startOnlineSyncLoop() {
+  setInterval(async () => {
+    await syncAllOnlineGroups(false);
+  }, 60 * 1000);
+}
+
+
+
+
+function getOnlineIDsFromMemory(group) {
+  if (!GROUP_CONFIG[group]) return [];
+  return [...onlineState[group]].filter(x => /^\d{16}$/.test(x));
+}
 
 //detecta onlineppm
 const GROUP_CONFIG = {
@@ -90,6 +241,15 @@ async function getUserGroup(interaction) {
 
 
 async function getOnlineIDs(gistId, fileName) {
+  const group = Object.keys(GROUP_CONFIG).find(g =>
+    GROUP_CONFIG[g].IDS_GIST_ID === gistId &&
+    GROUP_CONFIG[g].IDS_FILENAME === fileName
+  );
+
+  if (group && onlineStateReady) {
+    return getOnlineIDsFromMemory(group);
+  }
+
   const key = `${gistId}:${fileName}:online_ids`;
   const cached = gistCache.get(key);
 
@@ -101,7 +261,8 @@ async function getOnlineIDs(gistId, fileName) {
     const res = await fetch(`https://api.github.com/gists/${gistId}`, {
       headers: {
         Authorization: `Bearer ${GITHUB_TOKEN}`,
-        Accept: "application/vnd.github+json"
+        Accept: "application/vnd.github+json",
+        "User-Agent": "Zenith-Rise-Discord-Bot"
       }
     });
 
@@ -114,10 +275,7 @@ async function getOnlineIDs(gistId, fileName) {
     const data = await res.json();
     const content = data.files[fileName]?.content || "";
 
-    const ids = content
-      .split(/\r?\n/)
-      .map(x => x.trim())
-      .filter(x => /^\d{16}$/.test(x));
+    const ids = parseIdsFromText(content);
 
     gistCache.set(key, {
       time: Date.now(),
@@ -205,20 +363,17 @@ function saveSchedules(data) {
 }
 
 function startDailyScheduler() {
-
   setInterval(async () => {
+    const schedules = loadSchedules();
+    const now = new Date();
 
-    const schedules = loadSchedules()
-    const now = new Date()
-
-    const utcHour = now.getUTCHours()
-    const utcMinute = now.getUTCMinutes()
-    const todayUTC = now.toISOString().slice(0,10)
+    const utcHour = now.getUTCHours();
+    const utcMinute = now.getUTCMinutes();
+    const todayUTC = now.toISOString().slice(0, 10);
 
     for (const userId in schedules) {
-
-      const data = schedules[userId]
-      if (!data.group || !data.main_id) continue
+      const data = schedules[userId];
+      if (!data.group || !data.main_id) continue;
 
       // ONLINE
       if (
@@ -226,9 +381,12 @@ function startDailyScheduler() {
         data.online_minute === utcMinute &&
         data.last_online !== todayUTC
       ) {
-        await fetch(`${API_URL}?action=online&id=${data.main_id}&group=${data.group}`)
-        data.last_online = todayUTC
-        console.log("🟢 Daily ONLINE ejecutado:", data.main_id)
+        const ok = await setOnlineStatus("online", data.main_id, data.group);
+
+        if (ok) {
+          data.last_online = todayUTC;
+          console.log("🟢 Daily ONLINE ejecutado:", data.main_id);
+        }
       }
 
       // OFFLINE
@@ -237,17 +395,17 @@ function startDailyScheduler() {
         data.offline_minute === utcMinute &&
         data.last_offline !== todayUTC
       ) {
-        await fetch(`${API_URL}?action=offline&id=${data.main_id}&group=${data.group}`)
-        data.last_offline = todayUTC
-        console.log("🔴 Daily OFFLINE ejecutado:", data.main_id)
-      }
+        const ok = await setOnlineStatus("offline", data.main_id, data.group);
 
+        if (ok) {
+          data.last_offline = todayUTC;
+          console.log("🔴 Daily OFFLINE ejecutado:", data.main_id);
+        }
+      }
     }
 
-    saveSchedules(schedules)
-
-  }, 60 * 1000)
-
+    saveSchedules(schedules);
+  }, 60 * 1000);
 }
 
 
@@ -263,26 +421,50 @@ function saveHistory(data) {
 //let onlineUsers = {}
 async function setOnlineStatus(action, id, group) {
   try {
-    id = String(id || "").trim()
+    id = String(id || "").trim();
+
+    if (!["online", "offline"].includes(action)) {
+      console.error("Invalid action:", action);
+      return false;
+    }
 
     if (!/^\d{16}$/.test(id)) {
-      console.error("Invalid ID:", id)
-      return false
+      console.error("Invalid ID:", id);
+      return false;
     }
 
-    const url = `${API_URL}?action=${action}&id=${id}&group=${group}`
-    const res = await fetch(url)
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "")
-      console.error(`API ${action} error:`, res.status, text)
-      return false
+    if (!GROUP_CONFIG[group]) {
+      console.error("Invalid group:", group);
+      return false;
     }
 
-    return true
+    if (!onlineStateReady) {
+      console.log("⚠️ Online state not ready, loading now...");
+      await loadOnlineStateFromGists();
+    }
+
+    if (action === "online") {
+      onlineState[group].add(id);
+    }
+
+    if (action === "offline") {
+      onlineState[group].delete(id);
+    }
+
+    onlineDirty[group] = true;
+
+    const config = GROUP_CONFIG[group];
+
+    gistCache.set(`${config.IDS_GIST_ID}:${config.IDS_FILENAME}:online_ids`, {
+      time: Date.now(),
+      data: [...onlineState[group]]
+    });
+
+    return true;
+
   } catch (err) {
-    console.error(`setOnlineStatus ${action} error:`, err)
-    return false
+    console.error(`setOnlineStatus ${action} error:`, err);
+    return false;
   }
 }
 
@@ -477,6 +659,10 @@ const res = await fetch(`https://api.github.com/gists/${config.VIP_GIST_ID}`, {
 //Comandos
 client.once("clientReady", async () => {
   console.log(`✅ Bot listo como ${client.user.tag}`);
+
+    await loadOnlineStateFromGists();
+  startOnlineSyncLoop();
+  startDailyScheduler();
  
   //console.log(`🧹 Limpiando comandos...`);
 
@@ -938,13 +1124,12 @@ const group = await getUserGroup(interaction)
     }
 
     // 🔴 Poner OFFLINE el main_id anterior
-    if (userData.main_id) {
-      try {
-        await fetch(`${API_URL}?action=offline&id=${userData.main_id}&group=${group}`)
-      } catch (e) {
-        console.error("Error putting old ID offline:", e)
-      }
-    }
+if (userData.main_id) {
+  const okOffline = await setOnlineStatus("offline", userData.main_id, group);
+  if (!okOffline) {
+    console.error("Error putting old ID offline:", userData.main_id);
+  }
+}
 
     // 🔄 Actualizar manteniendo sec_id
     users[interaction.user.id] = {
@@ -1001,9 +1186,7 @@ await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 const ok = await setOnlineStatus("online", userData.main_id, group);
 
 if (!ok) {
-  return interaction.editReply(
-    "❌ GitHub/Gist is rate limited right now. Try again later or reduce API calls."
-  );
+  return interaction.editReply("❌ Could not set main account online.");
 }
 
 return interaction.editReply("🟢 Main account set online");
@@ -1037,9 +1220,7 @@ await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 const ok = await setOnlineStatus("online", userData.sec_id, group);
 
 if (!ok) {
-  return interaction.editReply(
-    "❌ GitHub/Gist is rate limited right now. Try again later or reduce API calls."
-  );
+  return interaction.editReply("❌ Could not set secondary account online.");
 }
 
 return interaction.editReply("🟢 Secondary account set online");
@@ -1089,9 +1270,7 @@ if (userData.sec_id) {
 }
 
 if (!okMain || !okSec) {
-  return interaction.editReply(
-    "❌ GitHub/Gist is rate limited right now. Some IDs may not have been updated."
-  );
+  return interaction.editReply("❌ Some IDs could not be updated.");
 }
 
 return interaction.editReply(`🔴 ${userData.name} is now OFFLINE in ${group}`);
@@ -1245,12 +1424,19 @@ if (interaction.isButton() && interaction.customId.startsWith("confirm_offline_"
     });
   }
 
-  await fetch(`${API_URL}?action=offline&id=${id}&group=${group}`);
+const ok = await setOnlineStatus("offline", id, group);
 
-  await interaction.update({
-    content: `🔴 ID ${id} set OFFLINE in **${group}**`,
+if (!ok) {
+  return interaction.update({
+    content: "❌ Could not set this ID offline.",
     components: []
   });
+}
+
+await interaction.update({
+  content: `🔴 ID ${id} set OFFLINE in **${group}**`,
+  components: []
+});
 }
  //////////
 
