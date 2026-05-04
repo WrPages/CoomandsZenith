@@ -49,6 +49,14 @@ const onlineDirty = {
 let onlineStateReady = false;
 let onlineSyncRunning = false;
 
+const onlineSyncCooldownUntil = {
+  Trainer: 0,
+  Gym_Leader: 0,
+  Elite_Four: 0
+};
+
+const ONLINE_SYNC_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutos
+
 function parseIdsFromText(content) {
   return String(content || "")
     .split(/\r?\n/)
@@ -112,6 +120,14 @@ async function syncOnlineGroupToGist(group, force = false) {
 
   if (!force && !onlineDirty[group]) return true;
 
+  const now = Date.now();
+
+  if (!force && onlineSyncCooldownUntil[group] > now) {
+    const secondsLeft = Math.ceil((onlineSyncCooldownUntil[group] - now) / 1000);
+    console.log(`⏳ GitHub sync cooldown for ${group}: ${secondsLeft}s left`);
+    return false;
+  }
+
   const content = buildOnlineContent(group);
 
   try {
@@ -135,12 +151,34 @@ async function syncOnlineGroupToGist(group, force = false) {
 
     if (!res.ok) {
       console.error(`❌ GitHub sync online error ${group}:`, res.status, text);
+
+ if (res.status === 403 || res.status === 429) {
+  const retryAfter = res.headers.get("retry-after");
+  const rateReset = res.headers.get("x-ratelimit-reset");
+  const remaining = res.headers.get("x-ratelimit-remaining");
+
+  let waitMs = ONLINE_SYNC_COOLDOWN_MS;
+
+  if (retryAfter) {
+    waitMs = Number(retryAfter) * 1000;
+  } else if (remaining === "0" && rateReset) {
+    const resetMs = Number(rateReset) * 1000;
+    waitMs = Math.max(resetMs - Date.now(), ONLINE_SYNC_COOLDOWN_MS);
+  }
+
+  onlineSyncCooldownUntil[group] = Date.now() + waitMs;
+
+  console.error(
+    `⏳ Pausing GitHub sync for ${group} for ${Math.ceil(waitMs / 1000)} seconds.`
+  );
+}
+
       return false;
     }
 
     onlineDirty[group] = false;
+    onlineSyncCooldownUntil[group] = 0;
 
-    // Actualizar cache vieja también, por si otra función la usa.
     gistCache.set(`${config.IDS_GIST_ID}:${config.IDS_FILENAME}:online_ids`, {
       time: Date.now(),
       data: [...onlineState[group]]
@@ -154,7 +192,6 @@ async function syncOnlineGroupToGist(group, force = false) {
     return false;
   }
 }
-
 async function syncAllOnlineGroups(force = false) {
   if (onlineSyncRunning) return;
   onlineSyncRunning = true;
@@ -171,9 +208,16 @@ async function syncAllOnlineGroups(force = false) {
 function startOnlineSyncLoop() {
   setInterval(async () => {
     await syncAllOnlineGroups(false);
-  }, 60 * 1000);
+  }, 5 * 60 * 1000);
+}
+async function shutdownOnlineSync() {
+  console.log("💾 Saving online state before shutdown...");
+  await syncAllOnlineGroups(false);
+  process.exit(0);
 }
 
+process.on("SIGINT", shutdownOnlineSync);
+process.on("SIGTERM", shutdownOnlineSync);
 
 
 
@@ -443,15 +487,27 @@ async function setOnlineStatus(action, id, group) {
       await loadOnlineStateFromGists();
     }
 
-    if (action === "online") {
-      onlineState[group].add(id);
-    }
+let changed = false;
 
-    if (action === "offline") {
-      onlineState[group].delete(id);
-    }
+if (action === "online") {
+  if (!onlineState[group].has(id)) {
+    onlineState[group].add(id);
+    changed = true;
+  }
+}
 
-    onlineDirty[group] = true;
+if (action === "offline") {
+  if (onlineState[group].has(id)) {
+    onlineState[group].delete(id);
+    changed = true;
+  }
+}
+
+if (!changed) {
+  return true;
+}
+
+onlineDirty[group] = true;
 
     const config = GROUP_CONFIG[group];
 
@@ -836,14 +892,7 @@ const TOTAL_CHANNEL_ID = "1484416376436424794"
 //const HISTORY_FILE = "./ppm_history.json";
 //const TWELVE_HOURS = 12 * 60 * 60 * 1000;
 
-function loadHistory() {
-  if (!fs.existsSync(HISTORY_FILE)) return [];
-  return JSON.parse(fs.readFileSync(HISTORY_FILE));
-}
 
-function saveHistory(data) {
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(data));
-}
 
 // ====== NUEVO updateTotalPPM ======
 //const HISTORY_FILE = "./ppm_history.json";
@@ -1189,7 +1238,7 @@ if (!ok) {
   return interaction.editReply("❌ Could not set main account online.");
 }
 
-return interaction.editReply("🟢 Main account set online");
+return interaction.editReply("🟢 Main account set online. It now appears in /online_list.");
 }
 
 
@@ -1223,7 +1272,7 @@ if (!ok) {
   return interaction.editReply("❌ Could not set secondary account online.");
 }
 
-return interaction.editReply("🟢 Secondary account set online");
+return interaction.editReply("🟢 Secondary account set online. It now appears in /online_list.");
 }
 
 
@@ -1498,17 +1547,26 @@ const onlineIds = await getOnlineIDs(
     let found = false;
 
     // 🔥 Optimizado (sin doble loop innecesario)
-    for (const uid in registeredUsers) {
-      const user = registeredUsers[uid];
+ // 🔥 Mostrar Main y Sec correctamente si están online
+for (const uid in registeredUsers) {
+  const user = registeredUsers[uid];
 
-      const mainId = (user.main_id || "").trim();
-      const secId = (user.sec_id || "").trim();
+  const mainId = (user.main_id || "").trim();
+  const secId = (user.sec_id || "").trim();
 
-      if (onlineIds.includes(mainId) || onlineIds.includes(secId)) {
-        msg += `👤 ${user.name} → ${mainId}\n`;
-        found = true;
-      }
-    }
+  const mainOnline = mainId && onlineIds.includes(mainId);
+  const secOnline = secId && onlineIds.includes(secId);
+
+  if (mainOnline || secOnline) {
+    const shownIds = [];
+
+    if (mainOnline) shownIds.push(`Main: ${mainId}`);
+    if (secOnline) shownIds.push(`Sec: ${secId}`);
+
+    msg += `👤 ${user.name} → ${shownIds.join(" | ")}\n`;
+    found = true;
+  }
+}
 
     if (!found)
       msg += "⚫ No registered users online\n";
