@@ -80,6 +80,46 @@ function safeJsonParse(value, fallback = {}) {
     return fallback
   }
 }
+function uniqueList(arr) {
+  return [...new Set(
+    arr
+      .map(x => String(x || "").trim())
+      .filter(Boolean)
+  )]
+}
+
+function buildUserData(oldData, interaction, updates = {}) {
+  const discordName =
+    interaction.member?.displayName ||
+    interaction.user?.username ||
+    "Unknown"
+
+  const oldAliases = Array.isArray(oldData.aliases) ? oldData.aliases : []
+
+  const name = oldData.name || discordName
+
+  const heartbeatName =
+    oldData.heartbeatName ||
+    oldData.name ||
+    discordName
+
+  const aliases = uniqueList([
+    ...oldAliases,
+    oldData.name,
+    oldData.heartbeatName,
+    discordName,
+    name,
+    heartbeatName
+  ])
+
+  return {
+    ...oldData,
+    name,
+    heartbeatName,
+    aliases,
+    ...updates
+  }
+}
 
 function isValidId(id) {
   return /^\d{16}$/.test(String(id || "").trim())
@@ -470,14 +510,23 @@ client.once("clientReady", async () => {
   // 🔥 DEFINIR COMANDOS NUEVOS
   const commands = [
 
-    new SlashCommandBuilder()
-      .setName("register")
-      .setDescription("Register your main game ID")
-      .addStringOption(option =>
-        option.setName("id")
-          .setDescription("Your 16 digit main ID")
-          .setRequired(true)
-      ),
+new SlashCommandBuilder()
+  .setName("change")
+  .setDescription("Change your main game ID")
+  .addStringOption(option =>
+    option.setName("id")
+      .setDescription("New 16 digit ID")
+      .setRequired(true)
+  ),
+
+new SlashCommandBuilder()
+  .setName("heartbeat_name")
+  .setDescription("Set your exact heartbeat name")
+  .addStringOption(option =>
+    option.setName("name")
+      .setDescription("Exact name shown in your heartbeat")
+      .setRequired(true)
+  ),
 
    new SlashCommandBuilder()
   .setName("change_rol")
@@ -781,6 +830,57 @@ if (interaction.commandName === "add_vip") {
     flags: MessageFlags.Ephemeral
   });
 }
+
+if (interaction.commandName === "heartbeat_name") {
+  const group = await getUserGroup(interaction)
+
+  if (!group) {
+    return interaction.reply({
+      content: "❌ No group",
+      flags: MessageFlags.Ephemeral
+    })
+  }
+
+  const heartbeatName = interaction.options.getString("name").trim()
+
+  if (!heartbeatName) {
+    return interaction.reply({
+      content: "❌ Invalid heartbeat name.",
+      flags: MessageFlags.Ephemeral
+    })
+  }
+
+  let users = await getUsers(group)
+  const oldData = users[interaction.user.id]
+
+  if (!oldData?.main_id) {
+    return interaction.reply({
+      content: "❌ You must register first.",
+      flags: MessageFlags.Ephemeral
+    })
+  }
+
+  users[interaction.user.id] = buildUserData(oldData, interaction, {
+    heartbeatName,
+    aliases: uniqueList([
+      ...(Array.isArray(oldData.aliases) ? oldData.aliases : []),
+      oldData.name,
+      oldData.heartbeatName,
+      heartbeatName
+    ])
+  })
+
+  await saveUsers(users, group)
+
+  return interaction.reply({
+    content:
+      `✅ Heartbeat name updated.\n` +
+      `👤 Display name: **${users[interaction.user.id].name}**\n` +
+      `📡 Heartbeat name: **${users[interaction.user.id].heartbeatName}**`,
+    flags: MessageFlags.Ephemeral
+  })
+}
+  
 //tegister
 
 if (interaction.commandName === "register") {
@@ -802,15 +902,18 @@ if (interaction.commandName === "register") {
 
   const oldData = users[interaction.user.id] || {};
 
-  users[interaction.user.id] = {
-    main_id: id,
-    sec_id: oldData.sec_id || null,
-    name: interaction.member.displayName
-  };
+users[interaction.user.id] = buildUserData(oldData, interaction, {
+  main_id: id,
+  sec_id: oldData.sec_id || null
+});
 
- await saveUsers(users, group)
+await saveUsers(users, group)
 
-  return interaction.reply(`✅ Main ID registered in ${group}`);
+return interaction.reply(
+  `✅ Main ID registered in **${group}**\n` +
+  `👤 Display name: **${users[interaction.user.id].name}**\n` +
+  `📡 Heartbeat name: **${users[interaction.user.id].heartbeatName}**`
+);
 }
 
   // 🔥 Guardar en archivo correcto del gist correcto       
@@ -841,12 +944,13 @@ if (!group) {
     return interaction.reply("❌ You must register main ID first")
   }
 
-  userData.sec_id = secId
+users[interaction.user.id] = buildUserData(userData, interaction, {
+  sec_id: secId
+})
 
-  // 🔥 Guardar en el archivo correcto
 await saveUsers(users, group)
 
-  return interaction.reply("✅ Secondary ID added")
+return interaction.reply("✅ Secondary ID added")
 }
 
 
@@ -889,15 +993,18 @@ if (userData.main_id) {
 }
 
     // 🔄 Actualizar manteniendo sec_id
-    users[interaction.user.id] = {
-      main_id: newId,
-      sec_id: userData.sec_id || null,
-      name: interaction.member.displayName
-    }
+users[interaction.user.id] = buildUserData(userData, interaction, {
+  main_id: newId,
+  sec_id: userData.sec_id || null
+})
 
-  await saveUsers(users, group)
+await saveUsers(users, group)
 
-    return interaction.editReply(`🔄 Main ID updated in ${group}`)
+return interaction.editReply(
+  `🔄 Main ID updated in **${group}**\n` +
+  `👤 Display name: **${users[interaction.user.id].name}**\n` +
+  `📡 Heartbeat name: **${users[interaction.user.id].heartbeatName}**`
+)
 
   } catch (error) {
 
@@ -1200,7 +1307,7 @@ if (interaction.commandName === "list") {
 
   for (const uid in registeredUsers) {
     const user = registeredUsers[uid];
-    msg += `👤 ${user.name} → Main ID: ${user.main_id}\n`;
+    msg += `👤 ${user.name} | 📡 ${user.heartbeatName || user.name} → Main ID: ${user.main_id}\n`;
   }
 
   return interaction.reply(msg);
@@ -1243,7 +1350,7 @@ for (const uid in registeredUsers) {
     if (mainOnline) shownIds.push(`Main: ${mainId}`);
     if (secOnline) shownIds.push(`Sec: ${secId}`);
 
-    msg += `👤 ${user.name} → ${shownIds.join(" | ")}\n`;
+    msg += `👤 ${user.name} | 📡 ${user.heartbeatName || user.name} → ${shownIds.join(" | ")}\n`;
     found = true;
   }
 }
