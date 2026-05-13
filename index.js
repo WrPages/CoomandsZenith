@@ -509,7 +509,14 @@ client.once("clientReady", async () => {
 
   // 🔥 DEFINIR COMANDOS NUEVOS
   const commands = [
-
+  new SlashCommandBuilder()
+    .setName("register")
+    .setDescription("Register your main game ID")
+    .addStringOption(option =>
+      option.setName("id")
+        .setDescription("Your 16 digit main ID")
+        .setRequired(true)
+    ),
 new SlashCommandBuilder()
   .setName("change")
   .setDescription("Change your main game ID")
@@ -541,14 +548,7 @@ new SlashCommandBuilder()
           .setRequired(true)
       ),
 
-    new SlashCommandBuilder()
-      .setName("change")
-      .setDescription("Change your main game ID")
-      .addStringOption(option =>
-        option.setName("id")
-          .setDescription("New 16 digit ID")
-          .setRequired(true)
-      ),
+
 
 ///////
 
