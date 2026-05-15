@@ -466,6 +466,488 @@ async function addVipID(id, group) {
   }
 }
 
+// ================= RIVAL DUO SYSTEM =================
+
+const RIVAL_DUOS_KEY = "rival_duos"
+const RIVAL_DUO_BY_USER_KEY = "rival_duo_by_user"
+const RIVAL_DUO_BY_GAMEID_KEY = "rival_duo_by_gameid"
+
+function rivalDuoPendingKey(discordId) {
+  return `rival_duo_pending:${discordId}`
+}
+
+function createRivalDuoId() {
+  return `duo_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function rivalNow() {
+  return Date.now()
+}
+
+function isValidGameId(id) {
+  return /^\d{16}$/.test(String(id || "").trim())
+}
+
+function parseRivalJson(value, fallback = {}) {
+  try {
+    if (!value) return fallback
+    if (typeof value === "object") return value
+    return JSON.parse(value)
+  } catch {
+    return fallback
+  }
+}
+
+function getRivalDuoMembers(duo) {
+  return Object.entries(duo?.members || {}).map(([discordId, member]) => ({
+    discordId,
+    ...member
+  }))
+}
+
+function getRivalDuoMember(duo, discordId) {
+  return duo?.members?.[String(discordId)] || null
+}
+
+function isRivalDuoFull(duo) {
+  return getRivalDuoMembers(duo).length >= 2
+}
+
+function displayRivalDuoName(duo) {
+  const members = getRivalDuoMembers(duo)
+
+  if (!members.length) return "Empty Duo"
+
+  return members
+    .map(m => m.name || m.heartbeatName || "Unknown")
+    .join(" & ")
+}
+
+async function loadAllRivalDuos() {
+  try {
+    const data = await redis.hgetall(RIVAL_DUOS_KEY)
+
+    if (!data || typeof data !== "object") return {}
+
+    const out = {}
+
+    for (const duoId in data) {
+      out[duoId] = parseRivalJson(data[duoId], null)
+    }
+
+    return out
+  } catch (err) {
+    console.error("Error loading rival duos:", err)
+    return {}
+  }
+}
+
+async function saveRivalDuo(duo) {
+  try {
+    if (!duo?.id) return false
+
+    await redis.hset(RIVAL_DUOS_KEY, {
+      [duo.id]: JSON.stringify(duo)
+    })
+
+    return true
+  } catch (err) {
+    console.error("Error saving rival duo:", err)
+    return false
+  }
+}
+
+async function getRivalDuoById(duoId) {
+  try {
+    const raw = await redis.hget(RIVAL_DUOS_KEY, String(duoId))
+    return parseRivalJson(raw, null)
+  } catch (err) {
+    console.error("Error loading rival duo by id:", err)
+    return null
+  }
+}
+
+async function getRivalDuoByUser(discordId) {
+  try {
+    const raw = await redis.hget(RIVAL_DUO_BY_USER_KEY, String(discordId))
+
+    if (!raw) return null
+
+    const ref = parseRivalJson(raw, null)
+
+    if (!ref?.duoId) return null
+
+    return await getRivalDuoById(ref.duoId)
+  } catch (err) {
+    console.error("Error loading rival duo by user:", err)
+    return null
+  }
+}
+
+async function saveRivalDuoIndexes(duo) {
+  try {
+    for (const member of getRivalDuoMembers(duo)) {
+      await redis.hset(RIVAL_DUO_BY_USER_KEY, {
+        [member.discordId]: JSON.stringify({
+          duoId: duo.id,
+          discordId: member.discordId
+        })
+      })
+
+      await redis.hset(RIVAL_DUO_BY_GAMEID_KEY, {
+        [member.gameId]: JSON.stringify({
+          duoId: duo.id,
+          discordId: member.discordId
+        })
+      })
+    }
+
+    return true
+  } catch (err) {
+    console.error("Error saving rival duo indexes:", err)
+    return false
+  }
+}
+
+async function findOpenRivalDuos() {
+  const duos = await loadAllRivalDuos()
+
+  return Object.values(duos)
+    .filter(Boolean)
+    .filter(duo => !isRivalDuoFull(duo))
+}
+
+async function savePendingRivalDuoRegistration(discordId, data) {
+  await redis.set(rivalDuoPendingKey(discordId), JSON.stringify(data), {
+    ex: 10 * 60
+  })
+}
+
+async function loadPendingRivalDuoRegistration(discordId) {
+  const raw = await redis.get(rivalDuoPendingKey(discordId))
+  return parseRivalJson(raw, null)
+}
+
+async function clearPendingRivalDuoRegistration(discordId) {
+  await redis.del(rivalDuoPendingKey(discordId))
+}
+
+async function registerRivalDuoMember({
+  discordId,
+  name,
+  heartbeatName,
+  gameId,
+  duoId = null
+}) {
+  discordId = String(discordId)
+  gameId = String(gameId || "").trim()
+
+  if (!isValidGameId(gameId)) {
+    return {
+      ok: false,
+      message: "❌ ID must be exactly 16 digits."
+    }
+  }
+
+  const existing = await getRivalDuoByUser(discordId)
+
+  if (existing) {
+    return {
+      ok: false,
+      message: "❌ You are already registered in a Rival Duo."
+    }
+  }
+
+  let duo = null
+
+  if (duoId) {
+    duo = await getRivalDuoById(duoId)
+
+    if (!duo) {
+      return {
+        ok: false,
+        message: "❌ This Rival Duo no longer exists."
+      }
+    }
+
+    if (isRivalDuoFull(duo)) {
+      return {
+        ok: false,
+        message: "❌ This Rival Duo is already full."
+      }
+    }
+  } else {
+    duo = {
+      id: createRivalDuoId(),
+      createdAt: rivalNow(),
+      members: {},
+      onlineUsers: {},
+      activeGameId: null,
+      activeDiscordId: null,
+      activeIndex: 0,
+      lastRotationAt: 0,
+      lastHeartbeatAt: {},
+      lastHeartbeatStats: {},
+      status: "waiting"
+    }
+  }
+
+  duo.members[discordId] = {
+    discordId,
+    name: name || "Unknown",
+    heartbeatName: heartbeatName || name || "Unknown",
+    gameId,
+    aliases: [
+      name,
+      heartbeatName
+    ].filter(Boolean),
+    joinedAt: rivalNow()
+  }
+
+  await saveRivalDuo(duo)
+  await saveRivalDuoIndexes(duo)
+
+  if (isRivalDuoFull(duo)) {
+    return {
+      ok: true,
+      message: `✅ Rival Duo completed: **${displayRivalDuoName(duo)}**.`
+    }
+  }
+
+  return {
+    ok: true,
+    message: "✅ Rival Duo created. Waiting for your reroll partner."
+  }
+}
+
+async function removeRivalDuoIdsFromElite(duo) {
+  const ids = getRivalDuoMembers(duo)
+    .map(m => String(m.gameId || "").trim())
+    .filter(isValidGameId)
+
+  if (!ids.length) return
+
+  await redis.srem("online:Elite_Four", ...ids)
+}
+
+async function activateRivalDuoId(duo, force = false) {
+  const members = getRivalDuoMembers(duo)
+
+  if (members.length < 2) {
+    await removeRivalDuoIdsFromElite(duo)
+
+    duo.activeGameId = null
+    duo.activeDiscordId = null
+    duo.status = "waiting_partner"
+
+    await saveRivalDuo(duo)
+
+    return {
+      ok: false,
+      waiting: true,
+      message: "⏳ Waiting for reroll partner."
+    }
+  }
+
+  const bothOnline = members.every(member => {
+    return duo.onlineUsers?.[member.discordId] === true
+  })
+
+  if (!bothOnline) {
+    await removeRivalDuoIdsFromElite(duo)
+
+    duo.activeGameId = null
+    duo.activeDiscordId = null
+    duo.status = "waiting_partner"
+
+    await saveRivalDuo(duo)
+
+    return {
+      ok: false,
+      waiting: true,
+      message: "⏳ Waiting for reroll partner."
+    }
+  }
+
+  const now = rivalNow()
+
+  const shouldRotate =
+    force ||
+    !duo.lastRotationAt ||
+    now - Number(duo.lastRotationAt || 0) >= 60 * 60 * 1000
+
+  if (!duo.activeGameId || shouldRotate) {
+    const index = Number(duo.activeIndex || 0) % members.length
+    const activeMember = members[index]
+
+    await removeRivalDuoIdsFromElite(duo)
+
+    duo.activeGameId = activeMember.gameId
+    duo.activeDiscordId = activeMember.discordId
+    duo.lastRotationAt = now
+    duo.activeIndex = (index + 1) % members.length
+    duo.status = "online"
+
+    await redis.sadd("online:Elite_Four", activeMember.gameId)
+    await saveRivalDuo(duo)
+
+    return {
+      ok: true,
+      waiting: false,
+      message: `🟢 Rival Duo online in Elite Four.\nActive ID: **${activeMember.gameId}**\nActive user: <@${activeMember.discordId}>`
+    }
+  }
+
+  await redis.sadd("online:Elite_Four", duo.activeGameId)
+  await saveRivalDuo(duo)
+
+  return {
+    ok: true,
+    waiting: false,
+    message: `🟢 Rival Duo already online.\nActive ID: **${duo.activeGameId}**\nActive user: <@${duo.activeDiscordId}>`
+  }
+}
+
+async function setRivalDuoOnline(discordId) {
+  const duo = await getRivalDuoByUser(discordId)
+
+  if (!duo) {
+    return {
+      ok: false,
+      message: "❌ You are not registered in a Rival Duo."
+    }
+  }
+
+  if (!duo.onlineUsers) duo.onlineUsers = {}
+
+  duo.onlineUsers[String(discordId)] = true
+
+  await saveRivalDuo(duo)
+
+  return await activateRivalDuoId(duo, false)
+}
+
+async function setRivalDuoOffline(discordId, reason = "offline") {
+  const duo = await getRivalDuoByUser(discordId)
+
+  if (!duo) {
+    return {
+      ok: false,
+      message: "❌ You are not registered in a Rival Duo."
+    }
+  }
+
+  await removeRivalDuoIdsFromElite(duo)
+
+  duo.onlineUsers = {}
+  duo.activeGameId = null
+  duo.activeDiscordId = null
+  duo.status = "offline"
+  duo.offlineReason = reason
+  duo.offlineAt = rivalNow()
+
+  await saveRivalDuo(duo)
+
+  return {
+    ok: true,
+    message: `🔴 Rival Duo offline: **${displayRivalDuoName(duo)}**.`
+  }
+}
+
+async function tickRivalDuoRotation() {
+  const duos = await loadAllRivalDuos()
+
+  for (const duo of Object.values(duos)) {
+    if (!duo) continue
+    if (duo.status !== "online") continue
+
+    await activateRivalDuoId(duo, false)
+  }
+}
+
+async function changeRivalDuoGameId(discordId, newGameId) {
+  discordId = String(discordId)
+  newGameId = String(newGameId || "").trim()
+
+  if (!isValidGameId(newGameId)) {
+    return {
+      ok: false,
+      message: "❌ ID must be exactly 16 digits."
+    }
+  }
+
+  const duo = await getRivalDuoByUser(discordId)
+
+  if (!duo) {
+    return {
+      ok: false,
+      message: "❌ You are not registered in a Rival Duo."
+    }
+  }
+
+  const member = getRivalDuoMember(duo, discordId)
+
+  if (!member) {
+    return {
+      ok: false,
+      message: "❌ Rival Duo member data was not found."
+    }
+  }
+
+  const oldGameId = String(member.gameId || "").trim()
+
+  if (oldGameId === newGameId) {
+    return {
+      ok: true,
+      message: `✅ Your Rival Duo ID is already **${newGameId}**.`
+    }
+  }
+
+  if (oldGameId && isValidGameId(oldGameId)) {
+    await redis.srem("online:Elite_Four", oldGameId)
+
+    if (typeof redis.hdel === "function") {
+      await redis.hdel(RIVAL_DUO_BY_GAMEID_KEY, oldGameId)
+    } else {
+      const indexes = await redis.hgetall(RIVAL_DUO_BY_GAMEID_KEY)
+
+      if (indexes && typeof indexes === "object") {
+        delete indexes[oldGameId]
+
+        await redis.del(RIVAL_DUO_BY_GAMEID_KEY)
+
+        if (Object.keys(indexes).length > 0) {
+          await redis.hset(RIVAL_DUO_BY_GAMEID_KEY, indexes)
+        }
+      }
+    }
+  }
+
+  member.gameId = newGameId
+  member.updatedAt = rivalNow()
+
+  duo.members[discordId] = member
+
+  if (String(duo.activeDiscordId || "") === discordId) {
+    duo.activeGameId = newGameId
+    duo.lastRotationAt = rivalNow()
+
+    if (duo.status === "online") {
+      await redis.sadd("online:Elite_Four", newGameId)
+    }
+  }
+
+  await saveRivalDuo(duo)
+  await saveRivalDuoIndexes(duo)
+
+  return {
+    ok: true,
+    message:
+      `🔄 Rival Duo ID updated.\n` +
+      `Old ID: ${oldGameId || "None"}\n` +
+      `New ID: ${newGameId}`
+  }
+}
 //tewmina
 
 
@@ -475,6 +957,15 @@ client.once("clientReady", async () => {
   console.log(`✅ Bot listo como ${client.user.tag}`);
 
  startDailyScheduler();
+
+  setInterval(async () => {
+  try {
+    await tickRivalDuoRotation()
+  } catch (err) {
+    console.error("Rival Duo rotation error:", err)
+  }
+}, 60 * 1000)
+  
  
   //console.log(`🧹 Limpiando comandos...`);
 
@@ -523,6 +1014,20 @@ new SlashCommandBuilder()
   .addStringOption(option =>
     option.setName("id")
       .setDescription("New 16 digit ID")
+      .setRequired(true)
+  ),
+
+    new SlashCommandBuilder()
+  .setName("register_duo")
+  .setDescription("Register as Rival Duo member")
+  .addStringOption(option =>
+    option.setName("id")
+      .setDescription("Your 16 digit Rival Duo ID")
+      .setRequired(true)
+  )
+  .addStringOption(option =>
+    option.setName("heartbeat_name")
+      .setDescription("Exact name shown in your heartbeat")
       .setRequired(true)
   ),
 
@@ -694,6 +1199,100 @@ client.on("interactionCreate", async (interaction) => {
   const { commandName } = interaction;
 
   const userId = interaction.user.id
+  if (interaction.isChatInputCommand() && interaction.commandName === "register_duo") {
+  const hasRole = interaction.member.roles.cache.some(r => r.name === "Rival_Duo")
+
+  if (!hasRole) {
+    return interaction.reply({
+      content: "❌ You need the Rival_Duo role to use this command.",
+      flags: MessageFlags.Ephemeral
+    })
+  }
+
+  const gameId = interaction.options.getString("id").trim()
+  const heartbeatName = interaction.options.getString("heartbeat_name").trim()
+
+  if (!isValidId(gameId)) {
+    return interaction.reply({
+      content: "❌ ID must be exactly 16 digits.",
+      flags: MessageFlags.Ephemeral
+    })
+  }
+
+  const pending = {
+    discordId: interaction.user.id,
+    name: interaction.member?.displayName || interaction.user.username,
+    heartbeatName,
+    gameId
+  }
+
+  await savePendingRivalDuoRegistration(interaction.user.id, pending)
+
+  const openDuos = await findOpenRivalDuos()
+
+  if (!openDuos.length) {
+    const result = await registerRivalDuoMember(pending)
+
+    return interaction.reply({
+      content: result.message,
+      flags: MessageFlags.Ephemeral
+    })
+  }
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`rival_duo_select_${interaction.user.id}`)
+    .setPlaceholder("Select open Duo or create new")
+    .addOptions([
+      {
+        label: "Create new Rival Duo",
+        value: "create_new"
+      },
+      ...openDuos.slice(0, 24).map(duo => ({
+        label: displayRivalDuoName(duo).slice(0, 100),
+        value: duo.id
+      }))
+    ])
+
+  return interaction.reply({
+    content: "There are open Rival Duo registrations. Select one or create a new Duo.",
+    components: [new ActionRowBuilder().addComponents(menu)],
+    flags: MessageFlags.Ephemeral
+  })
+}
+
+  if (interaction.isStringSelectMenu() && interaction.customId.startsWith("rival_duo_select_")) {
+  const targetUserId = interaction.customId.replace("rival_duo_select_", "")
+
+  if (interaction.user.id !== targetUserId) {
+    return interaction.reply({
+      content: "❌ This menu is not for you.",
+      flags: MessageFlags.Ephemeral
+    })
+  }
+
+  const pending = await loadPendingRivalDuoRegistration(interaction.user.id)
+
+  if (!pending) {
+    return interaction.update({
+      content: "❌ Registration expired. Use /register_duo again.",
+      components: []
+    })
+  }
+
+  const selected = interaction.values[0]
+
+  const result = await registerRivalDuoMember({
+    ...pending,
+    duoId: selected === "create_new" ? null : selected
+  })
+
+  await clearPendingRivalDuoRegistration(interaction.user.id)
+
+  return interaction.update({
+    content: result.message,
+    components: []
+  })
+}
 //  let users = await getUsers()
 
 //SCHENDULE
@@ -958,9 +1557,22 @@ return interaction.reply("✅ Secondary ID added")
 
 if (interaction.commandName === "change") {
 
-  try {
+try {
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+
+  const newId = interaction.options.getString("id")
+
+  if (!/^\d{16}$/.test(newId)) {
+    return interaction.editReply("❌ ID must be exactly 16 digits (numbers only)")
+  }
+
+  const hasRivalDuoRole = interaction.member.roles.cache.some(r => r.name === "Rival_Duo")
+
+  if (hasRivalDuoRole) {
+    const result = await changeRivalDuoGameId(interaction.user.id, newId)
+    return interaction.editReply(result.message)
+  }
 
 const group = await getUserGroup(interaction)
     if (!group) {
@@ -969,11 +1581,6 @@ const group = await getUserGroup(interaction)
 
     const config = GROUP_CONFIG[group]
 
-    const newId = interaction.options.getString("id")
-
-    if (!/^\d{16}$/.test(newId)) {
-      return interaction.editReply("❌ ID must be exactly 16 digits (numbers only)")
-    }
 
     // 🔥 Cargar correctamente el archivo del grupo
     let users = await getUsers(group)
@@ -1020,6 +1627,15 @@ return interaction.editReply(
 
   
   if (interaction.commandName === "online") {
+    const hasRivalDuoRole = interaction.member.roles.cache.some(r => r.name === "Rival_Duo")
+
+if (hasRivalDuoRole) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+
+  const result = await setRivalDuoOnline(interaction.user.id)
+
+  return interaction.editReply(result.message)
+}
 
 const group = await getUserGroup(interaction);
 
@@ -1052,6 +1668,14 @@ return interaction.editReply("🟢 Main account set online. It now appears in /o
 
 //online sec
 if (interaction.commandName === "online_sec") {
+  const hasRivalDuoRole = interaction.member.roles.cache.some(r => r.name === "Rival_Duo")
+
+if (hasRivalDuoRole) {
+  return interaction.reply({
+    content: "❌ Rival Duo does not use secondary ID. Use /online instead.",
+    flags: MessageFlags.Ephemeral
+  })
+}
 
 const group = await getUserGroup(interaction);
 
@@ -1089,6 +1713,13 @@ return interaction.editReply("🟢 Secondary account set online. It now appears 
   if (interaction.commandName === "offline") {
 
   await interaction.deferReply()
+    const hasRivalDuoRole = interaction.member.roles.cache.some(r => r.name === "Rival_Duo")
+
+if (hasRivalDuoRole) {
+  const result = await setRivalDuoOffline(interaction.user.id, "manual_offline")
+
+  return interaction.editReply(result.message)
+}
 
   // 🔎 Detectar grupo por rol
   const group = await getUserGroup(interaction)
