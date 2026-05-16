@@ -1,3 +1,4 @@
+//811 cambiotiempo
 const { 
   Client, 
   GatewayIntentBits, 
@@ -807,7 +808,8 @@ async function activateRivalDuoId(duo, force = false) {
   const shouldRotate =
     force ||
     !duo.lastRotationAt ||
-    now - Number(duo.lastRotationAt || 0) >= 60 * 60 * 1000
+ //   now - Number(duo.lastRotationAt || 0) >= 60 * 60 * 1000
+  now - Number(duo.lastRotationAt || 0) >= 2 * 60 * 1000
 
   if (!duo.activeGameId || shouldRotate) {
     const index = Number(duo.activeIndex || 0) % members.length
