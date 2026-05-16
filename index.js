@@ -201,7 +201,16 @@ async function getUserGroup(interaction) {
 
   return memberGroups[0]
 }
+async function isActiveRivalDuo(interaction) {
+  const activeRoles = await getActiveRoles()
+  const selected = activeRoles[interaction.user.id]
 
+  const hasRivalDuoRole = interaction.member.roles.cache.some(role =>
+    role.name === "Rival_Duo" || role.name === "Rival Duo"
+  )
+
+  return hasRivalDuoRole && selected === "Rival_Duo"
+}
 
 async function getOnlineIDs(group) {
   if (!GROUP_CONFIG[group]) return []
@@ -1725,12 +1734,10 @@ try {
     return interaction.editReply("❌ ID must be exactly 16 digits (numbers only)")
   }
 
-  const hasRivalDuoRole = interaction.member.roles.cache.some(r => r.name === "Rival_Duo")
-
-  if (hasRivalDuoRole) {
-    const result = await changeRivalDuoGameId(interaction.user.id, newId)
-    return interaction.editReply(result.message)
-  }
+if (await isActiveRivalDuo(interaction)) {
+  const result = await changeRivalDuoGameId(interaction.user.id, newId)
+  return interaction.editReply(result.message)
+}
 
 const group = await getUserGroup(interaction)
     if (!group) {
@@ -1785,9 +1792,7 @@ return interaction.editReply(
 
   
   if (interaction.commandName === "online") {
-    const hasRivalDuoRole = interaction.member.roles.cache.some(r => r.name === "Rival_Duo")
-
-if (hasRivalDuoRole) {
+if (await isActiveRivalDuo(interaction)) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   const result = await setRivalDuoOnline(interaction.user.id)
@@ -1826,9 +1831,7 @@ return interaction.editReply("🟢 Main account set online. It now appears in /o
 
 //online sec
 if (interaction.commandName === "online_sec") {
-  const hasRivalDuoRole = interaction.member.roles.cache.some(r => r.name === "Rival_Duo")
-
-if (hasRivalDuoRole) {
+ if (await isActiveRivalDuo(interaction)) {
   return interaction.reply({
     content: "❌ Rival Duo does not use secondary ID. Use /online instead.",
     flags: MessageFlags.Ephemeral
@@ -1871,9 +1874,7 @@ return interaction.editReply("🟢 Secondary account set online. It now appears 
   if (interaction.commandName === "offline") {
 
   await interaction.deferReply()
-    const hasRivalDuoRole = interaction.member.roles.cache.some(r => r.name === "Rival_Duo")
-
-if (hasRivalDuoRole) {
+   if (await isActiveRivalDuo(interaction)) {
   const result = await setRivalDuoOffline(interaction.user.id, "manual_offline")
 
   return interaction.editReply(result.message)
