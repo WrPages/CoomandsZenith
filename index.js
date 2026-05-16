@@ -1,4 +1,4 @@
-//507 y 811 cambiotiempo
+//510 y 811 cambiotiempo
 //240,1118
 const { 
   Client, 
@@ -813,7 +813,7 @@ async function activateRivalDuoId(duo, force = false) {
     force ||
     !duo.lastRotationAt ||
  //   now - Number(duo.lastRotationAt || 0) >= 60 * 60 * 1000
-  now - Number(duo.lastRotationAt || 0) >= 2 * 60 * 1000
+  now - Number(duo.lastRotationAt || 0) >= RIVAL_DUO_ROTATION_MS
 
   if (!duo.activeGameId || shouldRotate) {
     const index = Number(duo.activeIndex || 0) % members.length
