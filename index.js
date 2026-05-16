@@ -152,6 +152,30 @@ function getMemberGroups(member) {
     .filter((group, index, arr) => arr.indexOf(group) === index)
 }
 
+function normalizeSelectableRoleName(roleName) {
+  const normalGroup = normalizeGroupRoleName(roleName)
+
+  if (normalGroup) return normalGroup
+
+  if (roleName === "Rival_Duo" || roleName === "Rival Duo") {
+    return "Rival_Duo"
+  }
+
+  return null
+}
+
+function getMemberSelectableRoles(member) {
+  return member.roles.cache
+    .map(role => normalizeSelectableRoleName(role.name))
+    .filter(Boolean)
+    .filter((group, index, arr) => arr.indexOf(group) === index)
+}
+
+function getSelectableRoleLabel(group) {
+  if (group === "Rival_Duo") return "Rival Duo"
+  return getGroupLabel(group)
+}
+
 function getGroupLabel(group) {
   return GROUP_CONFIG[group]?.label || group
 }
@@ -1958,12 +1982,12 @@ if (interaction.isStringSelectMenu() && interaction.customId === "select_active_
 
   const selected = interaction.values[0]
 
-await redis.hset(activeRolesKey(), {
-  [interaction.user.id]: selected
-})
+  await redis.hset(activeRolesKey(), {
+    [interaction.user.id]: selected
+  })
 
   return interaction.update({
-    content: `✅ Active role set to **${selected}**`,
+    content: `✅ Active role set to **${getSelectableRoleLabel(selected)}**`,
     components: []
   })
 }
@@ -2137,10 +2161,8 @@ if (interaction.commandName === "change_rol") {
 
   const member = interaction.member;
 
-  // 🔍 obtener roles válidos que el usuario tiene
-  const userGroups = getMemberGroups(member)
+  const userGroups = getMemberSelectableRoles(member)
 
-  // ❌ no tiene ningún grupo
   if (userGroups.length === 0) {
     return interaction.reply({
       content: "❌ You don't have any valid reroll roles.",
@@ -2148,17 +2170,15 @@ if (interaction.commandName === "change_rol") {
     });
   }
 
-  // ❌ solo tiene uno → no necesita cambiar
   if (userGroups.length === 1) {
     return interaction.reply({
-      content: `⚠️ You only have one role (**${userGroups[0]}**).\nYou need at least 2 roles to switch.`,
+      content: `⚠️ You only have one role (**${getSelectableRoleLabel(userGroups[0])}**).\nYou need at least 2 roles to switch.`,
       flags: MessageFlags.Ephemeral
     });
   }
 
-  // ✅ construir opciones dinámicamente
   const options = userGroups.map(group => ({
-    label: group.replace("_", " "),
+    label: getSelectableRoleLabel(group),
     value: group
   }));
 
